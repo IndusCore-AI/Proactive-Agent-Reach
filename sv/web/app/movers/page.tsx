@@ -38,8 +38,9 @@ export async function generateMetadata({ searchParams }: { searchParams: SP }): 
     description: `${INTRO} From ${SITE_NAME}.`,
     alternates: { canonical: abs('/movers') },
     openGraph: { title: TITLE, description: INTRO, url: abs('/movers') },
-    // Filtered views are for people; the unfiltered list is the one to index.
-    robots: sp.kind !== undefined || sp.page !== undefined ? { index: false, follow: true } : undefined,
+    // Filtered views are for people; the unfiltered list is the one to index
+    // (and keeps the layout's robots defaults, so the key is left out).
+    ...(sp.kind !== undefined || sp.page !== undefined ? { robots: { index: false, follow: true } } : {}),
   };
 }
 
