@@ -250,6 +250,9 @@ img, svg { display: block; max-width: 100%; }
 .meta .more { margin-left: auto; }
 
 .grid { display: grid; gap: 28px 24px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+/* Positioned, so absolutely placed bits inside (screen-reader text, badges)
+   stay clipped by a swipe row instead of widening the page. */
+.card, .hero, .row, .embed-card { position: relative; }
 .card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .card-body { display: flex; flex-direction: column; gap: 7px; flex: 1; }
 
@@ -273,6 +276,21 @@ img, svg { display: block; max-width: 100%; }
 
 .card:active .pic, .hero:active .pic { transform: scale(0.99); transition: transform 100ms ease-out; }
 
+/* Phones: each section becomes one swipeable row (the next card peeks in),
+   so the front page stays a short scroll instead of 47 stacked stories. */
+@media (max-width: 599px) {
+  .section .grid, .section .embed-grid {
+    grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 82%;
+    overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory;
+    margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter) 6px; scroll-padding: 0 var(--gutter);
+    gap: 14px; scrollbar-width: none;
+  }
+  .section .grid::-webkit-scrollbar, .section .embed-grid::-webkit-scrollbar { display: none; }
+  .section .grid > *, .section .embed-grid > * { scroll-snap-align: start; }
+  .section-head { margin-bottom: 10px; }
+  .section { margin-top: 30px; }
+}
+
 /* ---------- embeds: the platform's own widget, a card until it loads ---------- */
 .embed-grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
 .embed-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -287,7 +305,13 @@ img, svg { display: block; max-width: 100%; }
   margin: 0; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; font-size: 0.875rem;
   color: var(--ink-2); background: var(--surface); min-height: 120px;
 }
-.embed-fallback a { color: var(--accent); font-weight: 600; }
+.embed-fallback a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.x-card { display: grid; gap: 8px; }
+.x-card .x-author { font-size: 0.875rem; color: var(--ink); }
+.x-card .x-author span { color: var(--ink-3); }
+.x-card p { margin: 0; font-size: 0.9375rem; line-height: 1.45; color: var(--ink); white-space: pre-line;
+  display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
+.x-card a { font-size: 0.8125rem; }
 .yt { position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; background: #000; }
 .yt iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .yt-play { position: absolute; inset: 0; width: 100%; padding: 0; border: 0; cursor: pointer; background: #000; }

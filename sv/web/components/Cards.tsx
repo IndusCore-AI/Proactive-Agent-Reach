@@ -3,6 +3,8 @@ import Link from 'next/link';
 import { CATEGORY_LABEL, CLAIM_LABEL, compactNumber, hostOf, shortDate, storyPath, timePT } from '@/lib/format';
 import type { Item, Mention } from '@/lib/types';
 
+import { getXPost } from '@/lib/xpost';
+
 import { XEmbed, YouTubeEmbed } from './Embeds';
 import { Thumb } from './Thumb';
 
@@ -116,11 +118,15 @@ export function CompactRow({ item }: { item: Item }) {
 }
 
 /** A post or video the story is about, shown with the platform's own player. */
+export async function XPost({ id, title }: { id: string; title: string }) {
+  return <XEmbed id={id} title={title} post={await getXPost(id)} />;
+}
+
 export function EmbedCard({ item }: { item: Item }) {
   if (!item.embed) return null;
   return (
     <article className="embed-card" id={`e-${item.id}`}>
-      {item.embed.type === 'x' ? <XEmbed id={item.embed.ref} title={item.title} /> : <YouTubeEmbed id={item.embed.ref} title={item.title} />}
+      {item.embed.type === 'x' ? <XPost id={item.embed.ref} title={item.title} /> : <YouTubeEmbed id={item.embed.ref} title={item.title} />}
       <p className="embed-caption">
         <span className={`cat cat-${item.category}`}>{CATEGORY_LABEL[item.category]}</span>{' '}
         <a href={item.url} rel="noopener" target="_blank">

@@ -4,6 +4,10 @@ import Link from 'next/link';
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { SITE_NAME, abs } from '@/lib/format';
 
+// Static pages are cached by induscore.site's edge too (it proxies /sv), so
+// give this one a short lifetime: an edit shows up within ten minutes.
+export const revalidate = 600;
+
 export const metadata: Metadata = {
   title: 'How this feed is made',
   description: `How ${SITE_NAME} finds, checks, ranks and archives startup news every day, and what it never does.`,
@@ -104,8 +108,10 @@ export default function About() {
           <h2>What we store</h2>
           <p>
             The link, title, source, dates, tags and the source&apos;s own short description (at most 400 characters). We do
-            not copy articles, images or videos. X posts and YouTube videos are shown with the platforms&apos; own embeds,
-            loaded only when you reach them; everything else is a link to the original.
+            not copy articles, images or videos. A story&apos;s picture is the publisher&apos;s own preview image, loaded
+            from the publisher&apos;s site (or a company logo from its launch page); when there is none, the card shows a
+            plain cover. Videos and X posts appear only when the story&apos;s source embedded or cited them, through the
+            platforms&apos; own players, and are checked to be about the story before they are published.
           </p>
           <h2>Follow along</h2>
           <p>

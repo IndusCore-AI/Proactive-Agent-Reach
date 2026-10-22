@@ -3,8 +3,8 @@ import Link from 'next/link';
 import { notFound, permanentRedirect } from 'next/navigation';
 
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
-import { XEmbed, YouTubeEmbed } from '@/components/Embeds';
-import { Card } from '@/components/Cards';
+import { YouTubeEmbed } from '@/components/Embeds';
+import { Card, XPost } from '@/components/Cards';
 import { Thumb } from '@/components/Thumb';
 import { ApiError, getItem } from '@/lib/api';
 import {
@@ -141,7 +141,7 @@ export default async function StoryPage({ params }: { params: Params }) {
               <small>As stated by {item.source_name}.</small>
             </p>
           )}
-          {item.embed?.type === 'x' && <XEmbed id={item.embed.ref} title={item.title} />}
+          {item.embed?.type === 'x' && <XPost id={item.embed.ref} title={item.title} />}
           {item.embed?.type === 'youtube' && <YouTubeEmbed id={item.embed.ref} title={item.title} />}
           <div className="cta">
             <a className="btn primary" href={item.url} rel="noopener" target="_blank">

@@ -13,7 +13,13 @@ let widgetsRequested = false;
 /** X's official embed. The server renders X's documented blockquote markup
  * (readable without JS and by crawlers); widgets.js upgrades it only once the
  * post nears the viewport, so a page of cards never loads X up front. */
-export function XEmbed({ id, title }: { id: string; title: string }) {
+export interface XPostProps {
+  id: string;
+  title: string;
+  post?: { author: string; handle: string; text: string; date: string; url: string } | null;
+}
+
+export function XEmbed({ id, title, post }: XPostProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   useEffect(() => {
@@ -42,10 +48,22 @@ export function XEmbed({ id, title }: { id: string; title: string }) {
   }, []);
   return (
     <div className="embed x-embed" ref={ref}>
-      <blockquote className="twitter-tweet embed-fallback" data-dnt="true" data-conversation="none" data-theme={theme}>
-        <p>Post about: {title}</p>
-        <a href={`https://twitter.com/i/status/${id}`}>View this post on X</a>
-      </blockquote>
+      {post ? (
+        <blockquote className="twitter-tweet embed-fallback x-card" data-dnt="true" data-conversation="none" data-theme={theme}>
+          <span className="x-author">
+            <b>{post.author}</b> <span>@{post.handle}</span>
+          </span>
+          <p>{post.text}</p>
+          <a href={post.url}>
+            {post.date ? `${post.date} · ` : ''}View on X
+          </a>
+        </blockquote>
+      ) : (
+        <blockquote className="twitter-tweet embed-fallback" data-dnt="true" data-conversation="none" data-theme={theme}>
+          <p>A post about: {title}</p>
+          <a href={`https://twitter.com/i/status/${id}`}>View this post on X</a>
+        </blockquote>
+      )}
     </div>
   );
 }
