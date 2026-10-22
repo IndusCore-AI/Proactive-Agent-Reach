@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from 'next';
-import { Analytics } from '@vercel/analytics/next';
-
 import { Footer } from '@/components/Chrome';
+import { SiteAnalytics } from '@/components/SiteAnalytics';
 import { SITE_NAME, SITE_ORIGIN, TAGLINE, abs } from '@/lib/format';
 
 import './globals.css';
@@ -36,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </a>
         {children}
         <Footer />
-        <Analytics />
+        <SiteAnalytics />
       </body>
     </html>
   );

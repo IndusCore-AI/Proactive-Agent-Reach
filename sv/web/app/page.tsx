@@ -30,7 +30,9 @@ export default async function Today({ searchParams }: { searchParams: SP }) {
   const todayHasEdition = Object.keys(feed.facets.categories ?? {}).length > 0;
   if (!todayHasEdition) {
     const latest = await getFeed(query);
-    if (latest.date) {
+    if (!latest.date) {
+      feed = latest; // nothing has ever been ingested
+    } else {
       feed = latest;
       basePath = `/${latest.date}`;
       notice = (
