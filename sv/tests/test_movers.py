@@ -118,3 +118,62 @@ def test_status_and_reserved_ids():
 def test_the_leak_check_covers_a_score_verdict():
     texts = ingest.note_texts([mover(notes={"take": "A take.", "score": SCORE})])
     assert "A private verdict line." in texts and "A take." in texts
+
+
+# ---------------------------------------------------------------- a run's proposals (ingest.py movers --propose)
+
+EXISTING = [
+    {"id": "example-robotics", "name": "Example Robotics", "kind": "company", "status": "watching", "url": "https://www.example.com"},
+    {"id": "example-chat-app", "name": "Example Chat", "kind": "app", "status": "proposed",
+     "url": "https://apps.apple.com/us/app/example-chat/id6448311069"},
+    {"id": "example-skill", "name": "Example Skill", "kind": "skill", "status": "archived", "url": "https://github.com/example/skill"},
+]
+
+
+def proposal(**kw):
+    base = {"id": "new-thing", "name": "New Thing", "url": "https://newthing.example.org",
+            "notes": {"take": "Why it matters, privately.", "score": SCORE}}
+    return mover(**{**base, **kw})
+
+
+def test_a_good_proposal_passes():
+    assert ingest.proposal_problems([proposal()], EXISTING) == []
+    # another repo on GitHub, or another app on the App Store, is a different product
+    assert ingest.proposal_problems([proposal(url="https://github.com/example/other-skill")], EXISTING) == []
+    assert ingest.proposal_problems([proposal(url="https://apps.apple.com/in/app/other/id1234567890")], EXISTING) == []
+
+
+@pytest.mark.parametrize("movers,expected", [
+    ([proposal(id="example-robotics")], "already exists (watching); never propose an existing mover"),
+    ([proposal(id="example-skill")], "already exists (archived)"),
+    ([proposal(name="Example  robotics!")], "same name as the existing mover example-robotics"),
+    ([proposal(url="https://example.com/pricing")], "same site as the existing mover example-robotics"),
+    ([proposal(url="https://apps.apple.com/gb/app/example-chat-uk/id6448311069?l=en")], "same site as the existing mover example-chat-app"),
+    ([proposal(url="https://github.com/Example/Skill/")], "same site as the existing mover example-skill"),
+    ([proposal(status="proposed")], "a proposal has no status field"),
+    ([proposal(traction=[])], "needs at least one public traction line"),
+    ([mover(id="new-thing", name="New Thing", url="https://newthing.example.org", notes={"score": SCORE})], "needs notes.take"),
+    ([mover(id="new-thing", name="New Thing", url="https://newthing.example.org", notes={"take": "x"})], "needs notes.score"),
+    ([proposal(id=f"new-thing-{i}", name=f"New Thing {i}", url=f"https://n{i}.example.org") for i in range(4)], "at most 3 movers"),
+])
+def test_proposals_that_break_the_run_rules_are_refused(movers, expected):
+    problems = ingest.proposal_problems(movers, EXISTING)
+    assert any(expected in p for p in problems), problems
+
+
+def test_propose_checks_before_sending(monkeypatch, tmp_path, capsys):
+    sent = []
+
+    def fake_call(method, url, token=None, body=None, timeout=60):
+        if method == "GET":
+            return 200, {"movers": EXISTING}
+        sent.append(body)
+        return 200, {"results": []}
+
+    monkeypatch.setattr(ingest, "call", fake_call)
+    monkeypatch.setattr(ingest, "connection", lambda: ("https://example.invalid/sv", "token"))
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"movers": [proposal(id="example-robotics")]}))
+    with pytest.raises(SystemExit, match="proposals refused, nothing was sent"):
+        ingest.cmd_movers(["--propose", str(f)])
+    assert sent == []

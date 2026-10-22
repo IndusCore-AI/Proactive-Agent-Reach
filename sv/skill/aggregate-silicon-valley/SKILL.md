@@ -114,10 +114,44 @@ and the public page `https://induscore.site/sv/D` shows the top ones. Exit code 
 If items are rejected, read the reason, fix `curated.json`, and rerun the same command: reruns update in
 place and never duplicate.
 
-**5. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
-edition, inserted/updated/merged/rejected, sources that worked and those that failed (with the error),
-whether the database and page checks passed, and the run status (`complete` or `partial`). Say plainly if
-anything failed.
+**5. Propose movers (at most 3).** Every run feeds the founders' desk (see "Movers to watch" below). Spend
+a few minutes here; zero proposals is a fine answer on a weak day.
+
+a. Read the founders' calls first: `python3 -I scripts/ingest.py feedback` (votes with reasons, stage,
+   status, score) and `python3 -I scripts/ingest.py movers --list` (every id, including passed and archived).
+b. Gather signals: `chart-movers.json` in the run directory (apps rising in a country's chart, apps that
+   work abroad but not in the US, US hits missing in India and Southeast Asia), plus the strongest signals
+   in today's candidates: a funding round, a revenue figure a founder states in public (MRR, ARR), a chart
+   jump, fast GitHub star growth, a post or video with unusual engagement (HN points, views, likes, a top
+   Reddit post of the day).
+c. Pick at most 3 that fit the founders' context: they build software for manufacturing, e-commerce and
+   their suppliers, in India, Southeast Asia, Europe, Australia and New Zealand. Good picks: something that
+   works in one market and is missing in theirs, a product their customers' world could copy or localize,
+   a tool or skill they could use themselves.
+d. Let the votes steer: more like the movers they upvoted or moved to researching or building; nothing like
+   the ones they passed or downvoted; read every vote reason and follow it (a reason beats these defaults).
+e. Never propose a mover that already exists: no existing id, name or site, whatever its status.
+f. For each pick, open the pages you cite, then write one file under `${TMPDIR:-/tmp}/keeping-up-sv/` with
+   the shape shown under "Movers to watch" and **no `status` field**:
+   - public facts only in the public fields, every traction line with a `source_url` you opened and the
+     `as_of` date the figure was true. For a chart signal, the line is the chart itself, e.g.
+     `{"label": "Top free iPhone apps, India", "value": "#7, new to the top 100", "source_url": "<the feed
+     URL from chart-movers.json>", "as_of": "<its snapshot date>"}`, and `url` is the app's own page;
+   - `notes.take` (why it matters for the founders, privately), and `learn` / `localize` when you can
+     support them;
+   - `notes.score`: the office-hours rubric, eight lines with their maximums (demand 25, problem 10, fit 15,
+     wedge 10, market 10, future 15, moat 10, whitespace 5) for one market you name in `notes.score.market`,
+     with a one-line verdict. Score honestly; if the total is under 40, do not propose it;
+   - `item_urls`: stories in today's edition about it, if any.
+g. Send them with `python3 -I scripts/ingest.py movers --propose <file.json>`. It refuses the whole file,
+   before sending anything, if it has more than 3 movers, a `status`, an id, name or site that already
+   exists, or a mover without a sourced traction line, a take or a score.
+
+**6. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
+edition, inserted/updated/merged/rejected, sources that worked, those that failed (with the error) and
+those skipped because they need a login, whether the database and page checks passed, and the run status
+(`complete` or `partial`). Then the movers you proposed (id, name, score, market, the signal behind it) or
+why you proposed none. Say plainly if anything failed.
 
 ## Movers to watch
 
@@ -126,23 +160,24 @@ daily news. Behind the founders' unlock the same page is their **desk**: a queue
 an office-hours score, votes (with reasons), a stage (new, researching, building, passed) and copyable next
 steps (an REA prompt, a build brief, a scoring prompt).
 
-**A run may propose movers; only a founder publishes.** A mover sent without `status` is `proposed`: it waits
+**A run proposes movers; only a founder publishes.** A mover sent without `status` is `proposed`: it waits
 in the desk's queue and appears on no public page, feed, sitemap or story until a founder publishes it there.
-Send `"status": "watching"` only when a founder told you to put it straight on the list. The daily run does
-not propose movers unless a founder asked for proposals in that run.
+Send `"status": "watching"` only when a founder told you to put it straight on the list. Each daily run
+proposes at most 3 (step 5 of the run, always with `--propose`).
 
 **Before proposing**, read what the founders thought of the last ones:
 `python3 -I scripts/ingest.py feedback`. Propose more like the upvoted ones and the ones in "researching" or
 "building"; none like the passed or downvoted ones; read every vote's reason and follow it.
 
-**In the daily run**, after step 4: `python3 -I scripts/ingest.py movers --list` prints the existing movers.
+**Linking stories**, after step 4: `python3 -I scripts/ingest.py movers --list` prints the existing movers.
 When a story you just published is clearly about one of them (the company raised, the app launched in a new
 market, the skill shipped a release), link it:
 `python3 -I scripts/ingest.py link <mover-id> <story-url> [<story-url> ...]`. Link only clear matches; a
 passing mention is not one. Missing stories are reported, never created.
 
-**When a founder asks to propose, add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
-(never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py movers <file.json>`:
+**When a founder asks to add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
+(never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py movers <file.json>` (a run's own
+proposals use `movers --propose`, which also refuses existing movers). The file:
 
 ```json
 {"movers": [{

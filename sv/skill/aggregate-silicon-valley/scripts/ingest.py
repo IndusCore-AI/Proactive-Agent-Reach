@@ -4,6 +4,7 @@
   python3 ingest.py --date YYYY-MM-DD --curated curated.json --sources sources.json
   python3 ingest.py --check                     # token + API reachability only
   python3 ingest.py movers movers.json          # propose/update movers (new ones wait on the founders' desk)
+  python3 ingest.py movers --propose new.json   # a run's proposals: at most 3, new ids only, scored
   python3 ingest.py movers --list               # every mover: id, kind, status, name
   python3 ingest.py link MOVER_ID STORY_URL...  # point stories already in the feed at a mover
   python3 ingest.py archive MOVER_ID            # stop watching a mover (hides it from the site)
@@ -36,6 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from collect import SSL_CONTEXT, UA  # noqa: E402
+import svlib  # noqa: E402
 
 CONFIG = Path.home() / ".config" / "keeping-up-sv" / "ingest.env"
 BATCH = 40
@@ -211,6 +213,66 @@ def mover_problems(m: object) -> list[str]:
     return out
 
 
+MAX_PROPOSALS = 3
+# Sites that host many products: there a mover is identified by its page, not the host.
+SHARED_HOSTS = {"apps.apple.com", "play.google.com", "github.com", "x.com", "youtube.com", "reddit.com", "producthunt.com",
+                "ycombinator.com", "huggingface.co", "chromewebstore.google.com", "xiaohongshu.com", "medium.com",
+                "substack.com", "linkedin.com"}
+
+
+def _norm_name(name: object) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(name or "").casefold())
+
+
+def site_key(url: object) -> str | None:
+    """What makes two movers' URLs the same product: the host, or on a shared
+    host the page (an App Store app by its id, in any country)."""
+    try:
+        key = svlib.url_key(str(url or ""))
+    except ValueError:
+        return None
+    host, _, path = key.partition("/")
+    if host == "apps.apple.com":
+        m = re.search(r"/id(\d+)", "/" + path)
+        return f"apps.apple.com/id{m.group(1)}" if m else key
+    if host in SHARED_HOSTS:
+        return key.split("?")[0].rstrip("/").lower()
+    return host
+
+
+def proposal_problems(movers: list[dict], existing: list[dict]) -> list[str]:
+    """The daily run's rules for proposals, checked before anything is sent:
+    at most MAX_PROPOSALS, no status (they wait on the founders' desk), never a
+    mover that already exists (same id, same name or same site), and each with
+    a sourced traction line, a private take and an office-hours score."""
+    out = []
+    if len(movers) > MAX_PROPOSALS:
+        out.append(f"a run proposes at most {MAX_PROPOSALS} movers; this file has {len(movers)}")
+    ids = {m.get("id"): m for m in existing}
+    names = {_norm_name(m.get("name")): m.get("id") for m in existing if _norm_name(m.get("name"))}
+    sites = {site_key(m.get("url")): m.get("id") for m in existing if site_key(m.get("url"))}
+    for m in movers:
+        mid = m.get("id")
+        if mid in ids:
+            out.append(f"{mid}: already exists ({ids[mid].get('status')}); never propose an existing mover "
+                       "(update its take with `ingest.py notes`, or link stories with `ingest.py link`)")
+        name, site = _norm_name(m.get("name")), site_key(m.get("url"))
+        if name and names.get(name) not in (None, mid):
+            out.append(f"{mid}: has the same name as the existing mover {names[name]}")
+        if site and sites.get(site) not in (None, mid):
+            out.append(f"{mid}: has the same site as the existing mover {sites[site]} ({site})")
+        if "status" in m:
+            out.append(f"{mid}: a proposal has no status field (it stays proposed until a founder publishes it)")
+        if not m.get("traction"):
+            out.append(f"{mid}: needs at least one public traction line with its source_url and as_of date")
+        notes = m.get("notes") if isinstance(m.get("notes"), dict) else {}
+        if not str(notes.get("take") or "").strip():
+            out.append(f"{mid}: needs notes.take, the private take")
+        if not isinstance(notes.get("score"), dict):
+            out.append(f"{mid}: needs notes.score, the office-hours rubric for one named market")
+    return out
+
+
 def load_movers(path: Path) -> list[dict]:
     doc = json.loads(path.read_text())
     movers = doc.get("movers") if isinstance(doc, dict) else doc
@@ -261,6 +323,9 @@ def cmd_movers(argv: list[str]) -> None:
     ap = argparse.ArgumentParser(prog="ingest.py movers", description="Add or update movers from a JSON file.")
     ap.add_argument("file", nargs="?", type=Path)
     ap.add_argument("--list", action="store_true", help="print every mover (id, kind, status, name) and exit")
+    ap.add_argument("--propose", action="store_true",
+                    help=f"a run's proposals: at most {MAX_PROPOSALS}, new ids, names and sites only, no status, each "
+                         "with a sourced traction line, notes.take and notes.score; refused before sending otherwise")
     args = ap.parse_args(argv)
     base, token = connection()
     if args.list:
@@ -274,6 +339,12 @@ def cmd_movers(argv: list[str]) -> None:
     if not args.file:
         ap.error("give a movers JSON file, or --list")
     movers = load_movers(args.file)
+    if args.propose:
+        status, listing = call("GET", f"{base}/api/ingest/movers", token)
+        if status != 200:
+            sys.exit(f"could not list the existing movers to check the proposals against: HTTP {status} {listing}")
+        if problems := proposal_problems(movers, listing.get("movers", [])):
+            sys.exit("proposals refused, nothing was sent:\n  " + "\n  ".join(problems[:30]))
     results: list[dict] = []
     errors: list[str] = []
     for i in range(0, len(movers), MOVER_BATCH):
