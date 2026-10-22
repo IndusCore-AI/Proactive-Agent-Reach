@@ -2,7 +2,8 @@ import 'server-only';
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import type { Feed, Item, ItemDetail } from './types';
+import { isUnlocked } from './founders';
+import type { Feed, Item, ItemDetail, MoverDetail, MoverKind, MoverList, MoverNotes } from './types';
 
 // The VM API is reachable only through a Cloudflare quick tunnel whose
 // hostname changes when the tunnel restarts. The VM announces the current URL
@@ -144,6 +145,49 @@ export function search(q: string): Promise<{ q: string; total: number; items: It
   return get(`/v1/search?${new URLSearchParams({ q, limit: '40' })}`);
 }
 
-export function getSitemapData(): Promise<{ items: { id: string; title: string; updated_at: string; date: string }[] }> {
+export function getSitemapData(): Promise<{
+  items: { id: string; title: string; updated_at: string; date: string }[];
+  movers: { id: string; updated_at: string }[];
+}> {
   return get('/v1/sitemap');
+}
+
+/** Movers' public facts, cached like every other read. */
+export function getMovers(q: { kind?: MoverKind; limit?: number; offset?: number } = {}): Promise<MoverList> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) if (v !== undefined) p.set(k, String(v));
+  return get(`/v1/movers?${p}`);
+}
+
+export function getMover(id: string): Promise<MoverDetail> {
+  return get(`/v1/movers/${encodeURIComponent(id)}`);
+}
+
+/** The founders' take on these movers, or null when it cannot be shown.
+ *
+ * PRIVATE. Answers only for a request that carries a valid unlock cookie
+ * (checked here, so no caller can forget). Uses its own token, and is never
+ * stored in Next's data cache: `cache: 'no-store'`, no `next` options, no tags. */
+export async function getPrivateNotes(ids: string[]): Promise<Record<string, MoverNotes> | null> {
+  if (!(await isUnlocked())) return null;
+  const token = process.env.SV_PRIVATE_READ_TOKEN;
+  if (!token) return null;
+  if (!ids.length) return {};
+  const query = new URLSearchParams({ ids: ids.join(',') });
+  for (const refresh of [false, true]) {
+    try {
+      const res = await fetch(`${await apiBase(refresh)}/v1/private/movers?${query}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) return (await res.json()) as Record<string, MoverNotes>;
+      if (!refresh && res.status >= 500) continue;
+      return null;
+    } catch (err) {
+      if (err && typeof err === 'object' && 'digest' in err) throw err;
+      if (refresh) return null;
+    }
+  }
+  return null;
 }

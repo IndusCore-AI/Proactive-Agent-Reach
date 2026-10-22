@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { addDays, idFromSlug, isIsoDate, slugify, storyPath, todayPT } from './format.ts';
+import { MOVER_ID_RE, addDays, idFromSlug, isIsoDate, moverKind, moverPath, slugify, storyPath, todayPT } from './format.ts';
 
 test('isIsoDate accepts real dates only', () => {
   assert.equal(isIsoDate('2026-10-22'), true);
@@ -28,4 +28,15 @@ test('story paths round-trip to the id', () => {
 test('addDays crosses months', () => {
   assert.equal(addDays('2026-10-31', 1), '2026-11-01');
   assert.equal(addDays('2026-03-01', -1), '2026-02-28');
+});
+
+test('mover kind filter and paths', () => {
+  assert.equal(moverKind('app'), 'app');
+  assert.equal(moverKind(['skill', 'app']), 'skill');
+  assert.equal(moverKind('person'), undefined);
+  assert.equal(moverKind(undefined), undefined);
+  assert.equal(moverPath('example-robotics'), '/movers/example-robotics');
+  assert.equal(MOVER_ID_RE.test('example-robotics'), true);
+  assert.equal(MOVER_ID_RE.test('../etc'), false);
+  assert.equal(MOVER_ID_RE.test('x'), false);
 });

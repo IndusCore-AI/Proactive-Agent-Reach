@@ -67,4 +67,61 @@ export interface Feed {
 export interface ItemDetail extends Item {
   score_detail: Record<string, unknown> | null;
   related: Item[];
+  /** Movers this story feeds (public facts only: id, name, kind). */
+  movers?: MoverRef[];
+}
+
+export type MoverKind = 'company' | 'app' | 'skill';
+export type MoverClaim = 'confirmed' | 'reported' | 'unverified';
+
+/** One traction fact as its source states it, with the date it was true. */
+export interface Traction {
+  label: string;
+  value: string;
+  source_url: string;
+  as_of: string;
+}
+
+/** A mover's public facts. The founders' take is a separate type, fetched separately. */
+export interface Mover {
+  id: string;
+  name: string;
+  kind: MoverKind;
+  url: string;
+  one_liner: string;
+  summary: string | null;
+  traction: Traction[];
+  markets_live: string[];
+  claim_status: MoverClaim;
+  tags: string[];
+  image_url: string | null;
+  image_kind: 'cover' | 'logo' | null;
+  first_added_at: string;
+  updated_at: string;
+  news_count: number;
+  latest_news_at: string | null;
+}
+
+export interface MoverDetail extends Mover {
+  items: Item[];
+}
+
+export interface MoverList {
+  total: number;
+  movers: Mover[];
+  facets: { kinds?: Partial<Record<MoverKind, number>> };
+}
+
+export interface MoverRef {
+  id: string;
+  name: string;
+  kind: MoverKind;
+}
+
+/** PRIVATE: only ever fetched for a founders-unlocked request (lib/api.ts getPrivateNotes). */
+export interface MoverNotes {
+  take: string | null;
+  learn: string | null;
+  localize: string | null;
+  updated_at: string;
 }

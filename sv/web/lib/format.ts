@@ -1,6 +1,6 @@
 // Pure helpers shared by pages, the sitemap and the feed. No server-only
 // imports here, so `npm test` can run them with node --test.
-import type { Category, ClaimStatus, Item } from './types.ts';
+import type { Category, ClaimStatus, Item, MoverKind } from './types.ts';
 
 export const SITE_ORIGIN = 'https://induscore.site';
 export const BASE_PATH = '/sv';
@@ -26,6 +26,24 @@ export const CLAIM_LABEL: Record<ClaimStatus, string> = {
   unverified: 'Unverified claim',
   opinion: 'Opinion',
 };
+
+export const MOVER_KINDS: { key: MoverKind; label: string; plural: string }[] = [
+  { key: 'company', label: 'Company', plural: 'Companies' },
+  { key: 'app', label: 'App', plural: 'Apps' },
+  { key: 'skill', label: 'Skill', plural: 'Skills' },
+];
+export const MOVER_KIND_LABEL = Object.fromEntries(MOVER_KINDS.map((k) => [k.key, k.label])) as Record<MoverKind, string>;
+export const MOVER_ID_RE = /^[a-z0-9][a-z0-9-]{1,59}$/;
+
+/** The ?kind= filter on /movers, or undefined for anything unrecognised. */
+export function moverKind(v: string | string[] | undefined): MoverKind | undefined {
+  const k = Array.isArray(v) ? v[0] : v;
+  return MOVER_KINDS.some((x) => x.key === k) ? (k as MoverKind) : undefined;
+}
+
+export function moverPath(id: string): string {
+  return `/movers/${id}`;
+}
 
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
