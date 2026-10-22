@@ -71,6 +71,38 @@ OpenAI, Google AI, Hugging Face, GitHub Blog, Reddit (RSS). Limits:
 - **Stratechery, SemiAnalysis, SaaStr** answer 403 to automated readers; disabled, not worked around.
 - YouTube is embed-only (click to load, youtube-nocookie.com).
 
+## Movers to watch
+
+`/sv/movers` lists companies, apps and skills gaining traction that the founders want to learn from, kept
+apart from the daily news. A story can point at a mover (`mover_items`); its page then shows "Mover: <name>".
+Movers are added only when a founder asks (`ingest.py movers <file.json>`, see the skill's SKILL.md); the
+daily run may link a story to an existing mover when the story is clearly about it.
+
+**Public facts, private take.**
+
+- Everyone sees each mover's neutral facts: what it is, its traction (every line with its source and the date
+  it was true), markets, claim status and linked news. These are indexed: `/sv/movers`, `/sv/movers/<id>`
+  (`WebPage` + `BreadcrumbList`), the sitemap and one line in llms.txt. Kind filters (`?kind=`) are
+  `noindex, follow`. RSS stays news-only.
+- The founders' take (how it helps us, what to learn, where to localize) lives in `mover_notes`, a separate
+  table no public query touches. Only `GET /v1/private/movers` serves it, behind its own token
+  (`SV_PRIVATE_READ_TOKEN_SHA256`; the read token gets 403, and so does a deployment where both are equal).
+- The site asks for it only on a request with a valid `sv_founders` cookie, with `cache: 'no-store'` (never in
+  Next's data cache). Pages that check the cookie render per request with `Cache-Control: private, no-cache,
+  no-store`, so neither Vercel nor induscore.site's proxy can hand one founder's page to anyone else. It never
+  appears in HTML served without the cookie, the sitemap, RSS, llms.txt or JSON-LD. Archived movers leave every
+  public view.
+
+**Unlocking.** Founders bookmark `https://induscore.site/sv/movers/unlock` (`noindex`, linked from nowhere).
+The passphrase's sha256 is compared with `SV_FOUNDERS_PASSPHRASE_SHA256` in constant time, with a one-second
+delay on a miss. A match sets `sv_founders = <exp>.<hmacSHA256(exp, SV_UNLOCK_SECRET)>`: httpOnly, Secure,
+`SameSite=Strict`, `Path=/sv`, 30 days. "Lock" on the founders bar clears it. Because of `SameSite=Strict`, a
+link to /sv/movers clicked on another site opens the public view; reload, or use the bookmark.
+
+**Archive through the script** (`ingest.py archive <id>`): it goes through the site's ingest route, which clears
+the page cache. Next caches only 200 responses, so after a direct API call on the VM a cached mover page can
+outlive the archive until any successful ingest POST clears the cache.
+
 ## Configuration
 
 | Where | Name | What |
@@ -78,11 +110,35 @@ OpenAI, Google AI, Hugging Face, GitHub Blog, Reddit (RSS). Limits:
 | Vercel `induscore-sv` (prod + preview) | `SV_READ_TOKEN` | read token; its sha256 is `SV_READ_TOKEN_SHA256` on the VM |
 | Vercel | `SV_ANNOUNCE_SECRET`, `SV_NTFY_TOPIC` | verify the signed tunnel URL; same values as the VM |
 | Vercel (optional) | `SV_API_URL` | fallback API URL when no announcement is found |
+| Vercel (production only) | `SV_PRIVATE_READ_TOKEN` | private read token for the founders' take on movers; its sha256 is `SV_PRIVATE_READ_TOKEN_SHA256` on the VM; never the same as `SV_READ_TOKEN` |
+| Vercel (production only) | `SV_FOUNDERS_PASSPHRASE_SHA256` | sha256 (hex) of the founders' passphrase; the passphrase itself is stored nowhere |
+| Vercel (production only) | `SV_UNLOCK_SECRET` | HMAC key for the `sv_founders` cookie, at least 32 characters |
 | VM `~/.config/keeping-up-sv/env` (600) | `SV_DATABASE_URL`, `SV_TEST_DATABASE_URL`, `SV_PORT`, `SV_READ_TOKEN_SHA256`, `SV_ANNOUNCE_SECRET`, `SV_NTFY_TOPIC` | written by `ops/vm-setup.sh` |
+| VM env file | `SV_PRIVATE_READ_TOKEN_SHA256` | added empty by `ops/vm-setup.sh`; while empty, the private route answers 403 and founders see "Couldn't load our take" |
 | Each laptop `~/.config/keeping-up-sv/ingest.env` (600) | `SV_INGEST_TOKEN` (+ optional `SV_BASE_URL`) | personal ingest token |
 
 Rotating the read token: generate one locally, `vercel env add SV_READ_TOKEN production` from stdin, put its
 sha256 into the VM env file, `bash sv/ops/deploy-vm.sh main`, redeploy the site.
+
+Issuing or rotating the founders' view secrets (from `sv/web`, linked to `induscore-sv`; nothing is echoed or
+written to shell history). Leave them off preview deployments: without them a page never unlocks.
+
+```bash
+# private read token: Vercel gets the token, the VM gets its sha256
+T=$(python3 -c 'import secrets; print("svp_" + secrets.token_urlsafe(32))')
+printf %s "$T" | vercel env add SV_PRIVATE_READ_TOKEN production
+printf %s "$T" | shasum -a 256 | cut -d' ' -f1    # -> SV_PRIVATE_READ_TOKEN_SHA256= in the VM env file
+unset T
+# passphrase: pick a long one (five or more random words); only its sha256 leaves your terminal
+read -rs P && printf %s "$P" | shasum -a 256 | cut -d' ' -f1 | tr -d '\n' | vercel env add SV_FOUNDERS_PASSPHRASE_SHA256 production; unset P
+# cookie signing key
+python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | vercel env add SV_UNLOCK_SECRET production
+```
+
+Then `bash sv/ops/deploy-vm.sh main` (the API reads its env at start) and `vercel deploy --prod`. To replace a
+value, `vercel env rm <NAME> production` first. Share the passphrase between the founders in person or a
+password manager, never teamctx, chat or git. A new passphrase does not sign anyone out; a new
+`SV_UNLOCK_SECRET` signs every browser out at once, so rotate both if the passphrase leaks.
 
 ## Deploying
 
@@ -98,7 +154,7 @@ sha256 into the VM env file, `bash sv/ops/deploy-vm.sh main`, redeploy the site.
 
 ```bash
 python3 -m pytest -q sv/tests                                   # skill logic, no network
-cd sv/web && npm test && npx tsc --noEmit && npx next build     # site
+cd sv/web && npm test && npx tsc --noEmit && npx next build     # site (incl. unlock cookie + ingest path tests)
 # API, on the VM against induscore_sv_test:
 ssh <vm> 'cd ~/keeping-up-sv/sv/api && set -a && . ~/.config/keeping-up-sv/env && set +a && .venv/bin/python -m pytest -q tests'
 ```
