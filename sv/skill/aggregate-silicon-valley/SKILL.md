@@ -28,7 +28,7 @@ installed by teamctx). Use `python3 -I` so nothing from the current directory is
      | sed 's/^/SV_INGEST_TOKEN=/' > ~/.config/keeping-up-sv/ingest.env && chmod 600 ~/.config/keeping-up-sv/ingest.env
    ```
 
-   `<vm>` is the prod VM (`<vm ssh target>` with the team key, or your `spd` alias). Create
+   `<vm>` is the prod VM's ssh target (host and key are in teamctx, the prod VM workflow). Create
    `~/.config/keeping-up-sv/` first (`mkdir -p -m 700`). Never paste the token into chat, teamctx or git.
 2. `python3 -I scripts/ingest.py --check` must print `ingest token: ok`.
 

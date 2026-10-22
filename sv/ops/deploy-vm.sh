@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Deploy the API to the prod VM from either founder's laptop:
 #   SV_VM=<vm ssh target> SV_VM_KEY=<path to the team key> bash sv/ops/deploy-vm.sh [branch]
+# (host and key: see teamctx, never this public repo)
 # (SV_VM may also be an ssh config alias such as `spd`.) Pulls the branch into
 # ~/keeping-up-sv, applies migrations and restarts the API window. The tunnel
 # keeps its URL because only the API process restarts.
 set -euo pipefail
 BRANCH="${1:-main}"
-VM="${SV_VM:?set SV_VM to the VM ssh target, e.g. <vm ssh target> or spd}"
+VM="${SV_VM:?set SV_VM to the VM ssh target (user@host or an ssh config alias)}"
 SSH=(ssh -o BatchMode=yes)
 [ -n "${SV_VM_KEY:-}" ] && SSH+=(-i "$SV_VM_KEY")
 "${SSH[@]}" "$VM" BRANCH="$BRANCH" bash -s <<'REMOTE'

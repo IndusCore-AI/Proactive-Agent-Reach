@@ -87,6 +87,7 @@ sha256 into the VM env file, `bash sv/ops/deploy-vm.sh main`, redeploy the site.
 ## Deploying
 
 - **API** (from either laptop): `SV_VM=<vm ssh target> SV_VM_KEY=<path to the team key> bash sv/ops/deploy-vm.sh main`.
+  The VM host and key are in teamctx (prod VM workflow), not in this public repo.
   Clones/pulls into `~/keeping-up-sv` on the VM, applies migrations, restarts tmux `keeping-up-sv:api`
   (the tunnel keeps its URL).
 - **Site**: `cd sv/web && vercel deploy --prod` (project `induscore-sv`, linked by `vercel link --project induscore-sv`).

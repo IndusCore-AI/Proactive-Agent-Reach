@@ -3,6 +3,7 @@
 # `ctx update` installs it into ~/.claude/skills/aggregate-silicon-valley/.
 # Source of truth stays in this repo; run this after changing the skill:
 #   SV_VM=<vm ssh target> SV_VM_KEY=<path to the team key> bash sv/ops/publish-skill.sh
+# (host and key: see teamctx, never this public repo)
 # Follows teamctx's convention (k:970): copy into client/skills/<name>/ with a
 # skill.json and commit on the VM's main. A client-only change needs no restart.
 set -euo pipefail
