@@ -3,10 +3,12 @@ database. Runs on the prod VM on 127.0.0.1 only; the public site reaches it
 through its own Cloudflare quick tunnel (see ../ops).
 
 Three kinds of caller, three kinds of token:
-  read     the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
-  private  the Vercel server, only for a founders-unlocked page: the founders'
-           own take on each mover (SV_PRIVATE_READ_TOKEN_SHA256, a different token)
-  ingest   a founder's Claude Code run (rows in ingest_tokens, one per person)
+  read      the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
+  founders  the Vercel server, only for a founders-unlocked page: the founders'
+            desk (their take, scores, votes, stages, proposed movers) and the
+            votes, stage changes and publishing they do there
+            (SV_FOUNDERS_TOKEN_SHA256, a different token)
+  ingest    a founder's Claude Code run (rows in ingest_tokens, one per person)
 Tokens are compared by sha256, so neither the env file nor the database holds
 a usable secret.
 """
@@ -34,7 +36,7 @@ import svlib  # noqa: E402  (the one copy of the URL / duplicate rules, shared w
 
 DATABASE_URL = os.environ.get("SV_DATABASE_URL", "postgresql:///induscore_sv")
 READ_TOKEN_SHA256 = os.environ.get("SV_READ_TOKEN_SHA256", "")
-PRIVATE_TOKEN_SHA256 = os.environ.get("SV_PRIVATE_READ_TOKEN_SHA256", "")
+FOUNDERS_TOKEN_SHA256 = os.environ.get("SV_FOUNDERS_TOKEN_SHA256", "")
 FIRST_EDITION = date(2026, 1, 1)
 STALE_RUN = timedelta(hours=3)
 
@@ -44,9 +46,15 @@ Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
 Tag = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]
 MOVER_ID = r"^[a-z0-9][a-z0-9-]{1,59}$"
 # Site paths under /movers/ that a mover id must never shadow.
-RESERVED_MOVER_IDS = {"unlock", "lock"}
+RESERVED_MOVER_IDS = {"unlock", "lock", "updates"}
 MoverKind = Literal["company", "app", "skill"]
 MoverClaim = Literal["confirmed", "reported", "unverified"]
+MoverStatus = Literal["proposed", "watching", "archived"]
+MoverStage = Literal["new", "researching", "building", "passed"]
+Founder = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")]
+# The office-hours rubric (teamctx k:878): line -> maximum points; 100 in all.
+RUBRIC = {"demand": 25, "problem": 10, "fit": 15, "wedge": 10, "market": 10, "future": 15, "moat": 10, "whitespace": 5}
+TRENDING_WINDOW = "14 days"
 
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
 
@@ -77,16 +85,16 @@ def require_read(authorization: Annotated[str | None, Header()] = None) -> None:
         raise HTTPException(403, "invalid read token")
 
 
-def require_private(authorization: Annotated[str | None, Header()] = None) -> None:
-    """The founders' take. Its own token: the read token never opens it, and a
+def require_founders(authorization: Annotated[str | None, Header()] = None) -> None:
+    """The founders' desk. Its own token: the read token never opens it, and a
     deployment where both tokens are the same is refused outright."""
     token = _bearer(authorization)
     if (
-        not PRIVATE_TOKEN_SHA256
-        or hmac.compare_digest(PRIVATE_TOKEN_SHA256, READ_TOKEN_SHA256)
-        or not hmac.compare_digest(_sha256(token), PRIVATE_TOKEN_SHA256)
+        not FOUNDERS_TOKEN_SHA256
+        or hmac.compare_digest(FOUNDERS_TOKEN_SHA256, READ_TOKEN_SHA256)
+        or not hmac.compare_digest(_sha256(token), FOUNDERS_TOKEN_SHA256)
     ):
-        raise HTTPException(403, "invalid private read token")
+        raise HTTPException(403, "invalid founders token")
 
 
 def require_ingest(authorization: Annotated[str | None, Header()] = None) -> str:
@@ -262,6 +270,39 @@ class Traction(BaseModel):
         return v
 
 
+class Score(BaseModel):
+    """The office-hours rubric for the localized idea (not the original
+    product), for one named market. The total is always the sum of the lines."""
+    model_config = ConfigDict(extra="forbid")
+    lines: dict[str, int]
+    market: str = Field(min_length=1, max_length=120)      # the named target market
+    verdict: str | None = Field(default=None, max_length=300)
+    total: int | None = Field(default=None, ge=0, le=100)  # optional; checked against the lines
+
+    @field_validator("lines")
+    @classmethod
+    def _lines(cls, v: dict[str, int]) -> dict[str, int]:
+        if set(v) != set(RUBRIC):
+            raise ValueError(f"lines must be exactly {', '.join(RUBRIC)}")
+        for k, n in v.items():
+            if not 0 <= n <= RUBRIC[k]:
+                raise ValueError(f"{k} must be between 0 and {RUBRIC[k]}")
+        return {k: v[k] for k in RUBRIC}
+
+    @field_validator("market", "verdict")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @model_validator(mode="after")
+    def _total(self) -> "Score":
+        computed = sum(self.lines.values())
+        if self.total is not None and self.total != computed:
+            raise ValueError(f"total {self.total} is not the sum of the lines ({computed})")
+        self.total = computed
+        return self
+
+
 class MoverNotes(BaseModel):
     """The founders' private take. Fields left out are kept as they are;
     a field sent as null is cleared."""
@@ -269,6 +310,7 @@ class MoverNotes(BaseModel):
     take: str | None = Field(default=None, max_length=1500)       # how it helps us
     learn: str | None = Field(default=None, max_length=1000)      # what to learn
     localize: str | None = Field(default=None, max_length=1000)   # where to localize
+    score: Score | None = None
 
     @field_validator("take", "learn", "localize")
     @classmethod
@@ -293,7 +335,9 @@ class MoverIn(BaseModel):
     tags: list[Tag] = Field(default_factory=list, max_length=8)
     image_url: str | None = Field(default=None, max_length=1000)
     image_kind: Literal["cover", "logo"] | None = None
-    status: Literal["watching", "archived"] | None = None   # omitted: new movers watch, existing ones keep theirs
+    # omitted: a new mover is proposed (founders only until one of them
+    # publishes it), an existing one keeps its status
+    status: MoverStatus | None = None
     notes: MoverNotes | None = None
     item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=50)
 
@@ -339,6 +383,30 @@ class MoversIn(BaseModel):
 
 class LinkIn(BaseModel):
     item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(min_length=1, max_length=50)
+
+
+class VoteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    vote: Literal[-1, 0, 1]                                  # 0 takes the vote back
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+
+class StageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    stage: MoverStage
+
+
+class StatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    status: MoverStatus
 
 
 # ---------------------------------------------------------------- read side
@@ -553,12 +621,19 @@ MOVER_COLUMNS = """
     m.id, m.name, m.kind, m.url, m.one_liner, m.summary, m.traction, m.markets_live, m.claim_status,
     m.tags, m.image_url, m.image_kind, m.first_added_at, m.updated_at
 """
-MOVER_NEWS = """
+# news_count: every story pointing here; news_recent: those published in the
+# trending window, which is what "Trending" sorts by.
+MOVER_NEWS = f"""
     left join lateral (
-        select count(*) news_count, max(coalesce(i.published_at, i.discovered_at)) latest_news_at
+        select count(*) news_count, max(coalesce(i.published_at, i.discovered_at)) latest_news_at,
+               count(*) filter (where coalesce(i.published_at, i.discovered_at) > now() - interval '{TRENDING_WINDOW}') news_recent
         from mover_items mi join items i on i.id = mi.item_id where mi.mover_id = m.id
     ) n on true
 """
+MOVER_ORDER = {
+    "trending": "n.news_recent desc, n.latest_news_at desc nulls last, m.updated_at desc, m.name",
+    "newest": "m.first_added_at desc, m.name",
+}
 
 
 def _mover_json(row: dict) -> dict:
@@ -568,10 +643,12 @@ def _mover_json(row: dict) -> dict:
 @app.get("/v1/movers", dependencies=[Depends(require_read)])
 def movers(
     kind: MoverKind | None = None,
+    sort: Literal["trending", "newest"] = "trending",
     limit: Annotated[int, Query(ge=1, le=100)] = 60,
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
 ) -> dict:
-    """Movers being watched, most recently active first, with how many stories feed each."""
+    """Movers being watched, with how many stories feed each. Trending: most
+    stories in the last 14 days first; newest: most recently added first."""
     where, args = ["m.status = 'watching'"], []
     if kind:
         where.append("m.kind = %s"); args.append(kind)
@@ -579,8 +656,8 @@ def movers(
     with pool.connection() as conn:
         total = conn.execute(f"select count(*) n from movers m where {cond}", args).fetchone()["n"]
         rows = conn.execute(
-            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at from movers m {MOVER_NEWS} where {cond} "
-            "order by greatest(m.updated_at, n.latest_news_at) desc, m.name limit %s offset %s", [*args, limit, offset]
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at, n.news_recent from movers m {MOVER_NEWS} "
+            f"where {cond} order by {MOVER_ORDER[sort]} limit %s offset %s", [*args, limit, offset]
         ).fetchall()
         kinds = conn.execute(
             "select coalesce(jsonb_object_agg(kind, n), '{}') k from (select kind, count(*) n from movers "
@@ -589,43 +666,203 @@ def movers(
     return {"total": total, "movers": [_mover_json(r) for r in rows], "facets": {"kinds": kinds}}
 
 
+def _mover_items(conn, mover_id: str) -> list[dict]:
+    items = conn.execute(
+        f"select {ITEM_COLUMNS}, f.feed_date from mover_items mi join items i on i.id = mi.item_id "
+        "left join feed_entries f on f.item_id = i.id where mi.mover_id = %s "
+        "order by coalesce(i.published_at, i.discovered_at) desc limit 20", (mover_id,)
+    ).fetchall()
+    mentions = _mentions_for(conn, [r["id"] for r in items])
+    return [_item_json(r, mentions[r["id"]]) for r in items]
+
+
+@app.get("/v1/movers/updates", dependencies=[Depends(require_read)])
+def mover_updates(limit: Annotated[int, Query(ge=1, le=200)] = 60) -> dict:
+    """What changed on the list, newest first: movers added and new stories
+    pointing at one. Public lines only, never who did it, and only for movers
+    that are on the list now."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select e.id, e.at, e.kind, e.mover_id, m.name, m.kind mover_kind, "
+            "case when e.kind = 'news' then (e.detail->>'count')::int end count "
+            "from mover_events e join movers m on m.id = e.mover_id "
+            "where not e.private and e.kind in ('added', 'news') and m.status = 'watching' "
+            "order by e.at desc, e.id desc limit %s", (limit,)
+        ).fetchall()
+    return {"updates": [_mover_json(r) for r in rows]}
+
+
 @app.get("/v1/movers/{mover_id}", dependencies=[Depends(require_read)])
 def mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)]) -> dict:
     with pool.connection() as conn:
         row = conn.execute(
-            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at from movers m {MOVER_NEWS} "
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at, n.news_recent from movers m {MOVER_NEWS} "
             "where m.id = %s and m.status = 'watching'", (mover_id,)
         ).fetchone()
         if not row:
             raise HTTPException(404, "no such mover")
-        items = conn.execute(
-            f"select {ITEM_COLUMNS}, f.feed_date from mover_items mi join items i on i.id = mi.item_id "
-            "left join feed_entries f on f.item_id = i.id where mi.mover_id = %s "
-            "order by coalesce(i.published_at, i.discovered_at) desc limit 20", (mover_id,)
-        ).fetchall()
-        mentions = _mentions_for(conn, [r["id"] for r in items])
-    return _mover_json(row) | {"items": [_item_json(r, mentions[r["id"]]) for r in items]}
+        items = _mover_items(conn, mover_id)
+    return _mover_json(row) | {"items": items}
 
 
-# ---------------------------------------------------------------- private side
+# ---------------------------------------------------------------- founders' desk
+#
+# Everything below answers only to the founders token, which only a
+# founders-unlocked page on the Vercel server sends. Responses are never cached.
 
-@app.get("/v1/private/movers", dependencies=[Depends(require_private)])
-def private_movers(response: Response, ids: Annotated[str | None, Query(max_length=6200)] = None) -> dict:
-    """The founders' take, keyed by mover id. Only a founders-unlocked page asks."""
+DESK_COLUMNS = f"""
+    {MOVER_COLUMNS}, m.status, m.added_by, n.news_count, n.latest_news_at, n.news_recent,
+    mn.take, mn.learn, mn.localize, mn.score, coalesce(mn.stage, 'new') stage, mn.updated_at notes_updated_at,
+    coalesce(v.votes, '[]') votes, coalesce(v.net, 0) net_votes
+"""
+DESK_JOINS = f"""
+    {MOVER_NEWS}
+    left join mover_notes mn on mn.mover_id = m.id
+    left join lateral (
+        select jsonb_agg(jsonb_build_object('voter', mv.voter, 'vote', mv.vote, 'reason', mv.reason, 'at', mv.updated_at)
+                         order by mv.updated_at desc) votes, sum(mv.vote) net
+        from mover_votes mv where mv.mover_id = m.id
+    ) v on true
+"""
+DESK_ORDER = {
+    "fit": "(mn.score->>'total')::int desc nulls last, coalesce(v.net, 0) desc, m.name",
+    "votes": "coalesce(v.net, 0) desc, (mn.score->>'total')::int desc nulls last, m.name",
+    **MOVER_ORDER,
+}
+
+
+def _desk_json(row: dict) -> dict:
+    out = _mover_json(row)
+    out["notes"] = {k: out.pop(k) for k in ("take", "learn", "localize")}
+    out["notes"]["updated_at"] = out.pop("notes_updated_at")
+    return out
+
+
+@app.get("/v1/private/desk", dependencies=[Depends(require_founders)])
+def desk(
+    response: Response,
+    status: MoverStatus | Literal["active"] | None = None,
+    kind: MoverKind | None = None,
+    stage: MoverStage | None = None,
+    sort: Literal["fit", "votes", "trending", "newest"] = "fit",
+) -> dict:
+    """Every mover with the founders' take, score, stage and votes. Proposed
+    movers are here and nowhere public. status "active" means proposed or
+    watching. Facets: status over everything; kind and stage within the
+    status asked for (so a filter's count matches what it shows); and
+    stage_active, stages over everything not archived."""
     response.headers["Cache-Control"] = "no-store"
-    wanted: list[str] | None = None
-    if ids is not None:
-        wanted = [x for x in ids.split(",") if x]
-        if len(wanted) > 100 or not all(re.fullmatch(MOVER_ID, x) for x in wanted):
-            raise HTTPException(422, "ids must be at most 100 comma-separated mover ids")
+    scope, scope_args = ("m.status <> 'archived'", []) if status == "active" else (("m.status = %s", [status]) if status else ("true", []))
+    where, args = [scope], list(scope_args)
+    for col, val in (("m.kind", kind), ("coalesce(mn.stage, 'new')", stage)):
+        if val:
+            where.append(f"{col} = %s"); args.append(val)
+    stage_counts = ("select coalesce(jsonb_object_agg(stage, n), '{{}}') from (select coalesce(mn.stage, 'new') stage, count(*) n "
+                    "from movers m left join mover_notes mn on mn.mover_id = m.id where {} group by 1) t")
     with pool.connection() as conn:
         rows = conn.execute(
-            "select mover_id, take, learn, localize, updated_at from mover_notes"
-            + (" where mover_id = any(%s)" if wanted is not None else "") + " order by mover_id",
-            (wanted,) if wanted is not None else (),
+            f"select {DESK_COLUMNS} from movers m {DESK_JOINS} where {' and '.join(where)} "
+            f"order by {DESK_ORDER[sort]} limit 300", args
         ).fetchall()
-    return {r["mover_id"]: {"take": r["take"], "learn": r["learn"], "localize": r["localize"],
-                            "updated_at": _iso(r["updated_at"])} for r in rows}
+        facets = conn.execute(
+            "select jsonb_build_object("
+            "'status', (select coalesce(jsonb_object_agg(status, n), '{}') from (select status, count(*) n from movers group by status) t), "
+            f"'kind', (select coalesce(jsonb_object_agg(kind, n), '{{}}') from (select kind, count(*) n from movers m where {scope} group by kind) t), "
+            f"'stage', ({stage_counts.format(scope)}), "
+            f"'stage_active', ({stage_counts.format("m.status <> 'archived'")})) f",
+            scope_args * 2,
+        ).fetchone()["f"]
+    return {"movers": [_desk_json(r) for r in rows], "facets": facets}
+
+
+@app.get("/v1/private/movers/{mover_id}", dependencies=[Depends(require_founders)])
+def desk_mover(response: Response, mover_id: Annotated[str, PathParam(pattern=MOVER_ID)]) -> dict:
+    """One mover in any status, with everything the desk knows and its history."""
+    response.headers["Cache-Control"] = "no-store"
+    with pool.connection() as conn:
+        row = conn.execute(f"select {DESK_COLUMNS} from movers m {DESK_JOINS} where m.id = %s", (mover_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such mover")
+        items = _mover_items(conn, mover_id)
+        events = conn.execute(
+            "select id, at, kind, actor, detail from mover_events where mover_id = %s order by at desc, id desc limit 50",
+            (mover_id,),
+        ).fetchall()
+    return _desk_json(row) | {"items": items, "events": [_mover_json(e) for e in events]}
+
+
+@app.get("/v1/private/updates", dependencies=[Depends(require_founders)])
+def desk_updates(response: Response, limit: Annotated[int, Query(ge=1, le=300)] = 100) -> dict:
+    """The full log: proposals, votes, stages, scores and publishing, with who did it."""
+    response.headers["Cache-Control"] = "no-store"
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select e.id, e.at, e.kind, e.actor, e.detail, e.private, e.mover_id, m.name, m.kind mover_kind, m.status "
+            "from mover_events e join movers m on m.id = e.mover_id order by e.at desc, e.id desc limit %s", (limit,)
+        ).fetchall()
+    return {"updates": [_mover_json(r) for r in rows]}
+
+
+def _event(conn, mover_id: str, kind: str, actor: str, detail: dict | None = None) -> None:
+    """Record what changed. Only 'added' and 'news' are public lines."""
+    conn.execute(
+        "insert into mover_events (mover_id, kind, actor, detail, private) values (%s, %s, %s, %s, %s)",
+        (mover_id, kind, actor, Jsonb(detail or {}), kind not in ("added", "news")),
+    )
+
+
+STATUS_EVENT = {"proposed": "proposed", "watching": "added", "archived": "archived"}
+
+
+def _desk_lock(conn, mover_id: str) -> dict:
+    row = conn.execute("select status from movers where id = %s for update", (mover_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such mover")
+    return row
+
+
+@app.post("/v1/private/movers/{mover_id}/vote", dependencies=[Depends(require_founders)])
+def desk_vote(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: VoteIn) -> dict:
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        if body.vote == 0:
+            conn.execute("delete from mover_votes where mover_id = %s and voter = %s", (mover_id, body.voter))
+        else:
+            conn.execute(
+                "insert into mover_votes (mover_id, voter, vote, reason) values (%s, %s, %s, %s) "
+                "on conflict (mover_id, voter) do update set vote = excluded.vote, reason = excluded.reason, updated_at = now()",
+                (mover_id, body.voter, body.vote, body.reason),
+            )
+        _event(conn, mover_id, "vote", body.voter, {"vote": body.vote, "reason": body.reason})
+    return {"id": mover_id, "voter": body.voter, "vote": body.vote}
+
+
+@app.post("/v1/private/movers/{mover_id}/stage", dependencies=[Depends(require_founders)])
+def desk_stage(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: StageIn) -> dict:
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        old = conn.execute("select stage from mover_notes where mover_id = %s", (mover_id,)).fetchone()
+        if (old["stage"] if old else "new") != body.stage:
+            conn.execute(
+                "insert into mover_notes (mover_id, stage, updated_by) values (%s, %s, %s) on conflict (mover_id) "
+                "do update set stage = excluded.stage, updated_by = excluded.updated_by, updated_at = now()",
+                (mover_id, body.stage, body.voter),
+            )
+            _event(conn, mover_id, "stage", body.voter, {"from": old["stage"] if old else "new", "to": body.stage})
+    return {"id": mover_id, "stage": body.stage}
+
+
+@app.post("/v1/private/movers/{mover_id}/status", dependencies=[Depends(require_founders)])
+def desk_status(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: StatusIn) -> dict:
+    """Publish a proposed mover (watching), take one off the list (archived),
+    or send it back to the founders' queue (proposed)."""
+    with pool.connection() as conn, conn.transaction():
+        row = _desk_lock(conn, mover_id)
+        if row["status"] != body.status:
+            conn.execute("update movers set status = %s, updated_by = %s, updated_at = now() where id = %s",
+                         (body.status, body.voter, mover_id))
+            _event(conn, mover_id, STATUS_EVENT[body.status], body.voter, {"from": row["status"]})
+    return {"id": mover_id, "status": body.status}
 
 
 # ---------------------------------------------------------------- ingest side
@@ -843,8 +1080,10 @@ def edition_ids(feed_date: date, operator: Annotated[str, Depends(require_ingest
 
 # ---------------------------------------------------------------- movers (ingest)
 #
-# Movers are added only when a founder asks; no run is involved. Each write
-# records the operator. Notes go to mover_notes and nowhere else.
+# A run may propose movers: a new one is "proposed" and only the founders see
+# it, on their desk, until one of them publishes it there (or a founder's run
+# sends status "watching" on purpose). Each write records the operator and a
+# line in mover_events. Notes and scores go to mover_notes and nowhere else.
 
 def _resolve_items(conn, urls: list[str]) -> tuple[list[str], list[str]]:
     """Item ids for story URLs that exist (as an item, or as a recorded
@@ -869,26 +1108,33 @@ def _resolve_items(conn, urls: list[str]) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(found)), missing
 
 
-def _link(conn, mover_id: str, item_ids: list[str]) -> int:
+def _link(conn, mover_id: str, item_ids: list[str], operator: str) -> int:
+    """Point these stories at a mover; returns how many were new links."""
+    new = 0
     for iid in item_ids:
-        conn.execute("insert into mover_items (mover_id, item_id) values (%s, %s) on conflict do nothing", (mover_id, iid))
-    return len(item_ids)
+        new += conn.execute(
+            "insert into mover_items (mover_id, item_id) values (%s, %s) on conflict do nothing", (mover_id, iid)
+        ).rowcount
+    if new:
+        _event(conn, mover_id, "news", operator, {"count": new})
+    return new
 
 
 def _upsert_mover(conn, m: MoverIn, operator: str) -> bool:
     """Insert or replace a mover's public facts; True when it is new."""
+    before = conn.execute("select status from movers where id = %s for update", (m.id,)).fetchone()
     row = conn.execute(
         """insert into movers (id, name, kind, url, one_liner, summary, traction, markets_live, claim_status, tags,
                image_url, image_kind, status, added_by, updated_by)
            values (%(id)s, %(name)s, %(kind)s, %(url)s, %(one_liner)s, %(summary)s, %(traction)s, %(markets)s,
-               %(claim)s, %(tags)s, %(image_url)s, %(image_kind)s, coalesce(%(status)s, 'watching'), %(op)s, %(op)s)
+               %(claim)s, %(tags)s, %(image_url)s, %(image_kind)s, coalesce(%(status)s, 'proposed'), %(op)s, %(op)s)
            on conflict (id) do update set
                name = excluded.name, kind = excluded.kind, url = excluded.url, one_liner = excluded.one_liner,
                summary = excluded.summary, traction = excluded.traction, markets_live = excluded.markets_live,
                claim_status = excluded.claim_status, tags = excluded.tags, image_url = excluded.image_url,
                image_kind = excluded.image_kind, status = coalesce(%(status)s, movers.status),
                updated_by = excluded.updated_by, updated_at = now()
-           returning (xmax = 0) as inserted""",
+           returning (xmax = 0) as inserted, status""",
         {
             "id": m.id, "name": m.name, "kind": m.kind, "url": m.url, "one_liner": m.one_liner, "summary": m.summary,
             "traction": Jsonb([t.model_dump(mode="json") for t in m.traction]), "markets": m.markets_live,
@@ -896,15 +1142,10 @@ def _upsert_mover(conn, m: MoverIn, operator: str) -> bool:
             "image_kind": m.image_kind if m.image_url else None, "status": m.status, "op": operator,
         },
     ).fetchone()
-    if m.notes is not None and m.notes.model_fields_set:
-        fields = sorted(m.notes.model_fields_set)          # a subset of take / learn / localize (extra fields are refused)
-        cols = ", ".join(fields)
-        conn.execute(
-            f"insert into mover_notes (mover_id, {cols}, updated_by) values (%s, {', '.join(['%s'] * len(fields))}, %s) "
-            f"on conflict (mover_id) do update set {', '.join(f'{f} = excluded.{f}' for f in fields)}, "
-            "updated_by = excluded.updated_by, updated_at = now()",
-            (m.id, *[getattr(m.notes, f) for f in fields], operator),
-        )
+    if before is None or before["status"] != row["status"]:
+        _event(conn, m.id, STATUS_EVENT[row["status"]], operator)
+    if m.notes is not None:
+        _write_notes(conn, m.id, m.notes, operator)   # a subset of take / learn / localize / score (extra fields are refused)
     return bool(row["inserted"])
 
 
@@ -929,7 +1170,7 @@ def ingest_movers(body: MoversIn, operator: Annotated[str, Depends(require_inges
                 with conn.transaction():
                     inserted = _upsert_mover(conn, m, operator)
                     ids, missing = _resolve_items(conn, m.item_urls)
-                    linked = _link(conn, m.id, ids)
+                    linked = _link(conn, m.id, ids, operator)
             except Exception as exc:
                 counts["rejected"] += 1
                 results.append({"index": index, "id": m.id, "outcome": "rejected", "reason": f"database: {exc}"[:300]})
@@ -943,7 +1184,7 @@ def ingest_movers(body: MoversIn, operator: Annotated[str, Depends(require_inges
 
 @app.get("/v1/ingest/movers")
 def ingest_mover_list(operator: Annotated[str, Depends(require_ingest)]) -> dict:
-    """Every mover (watching or archived), so a run can match stories to them."""
+    """Every mover (proposed, watching or archived), so a run can match stories to them."""
     with pool.connection() as conn:
         rows = conn.execute("select id, name, kind, url, status from movers order by name").fetchall()
     return {"movers": [dict(r) for r in rows]}
@@ -955,15 +1196,67 @@ def link_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: Link
     with pool.connection() as conn:
         _mover_exists(conn, mover_id)
         ids, missing = _resolve_items(conn, body.item_urls)
-        linked = _link(conn, mover_id, ids)
+        linked = _link(conn, mover_id, ids, operator)
     return {"id": mover_id, "linked": linked, "missing": missing}
 
 
 @app.post("/v1/ingest/movers/{mover_id}/archive")
 def archive_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)],
                   operator: Annotated[str, Depends(require_ingest)]) -> dict:
-    with pool.connection() as conn:
-        _mover_exists(conn, mover_id)
-        conn.execute("update movers set status = 'archived', updated_by = %s, updated_at = now() where id = %s",
-                     (operator, mover_id))
+    with pool.connection() as conn, conn.transaction():
+        row = _desk_lock(conn, mover_id)
+        if row["status"] != "archived":
+            conn.execute("update movers set status = 'archived', updated_by = %s, updated_at = now() where id = %s",
+                         (operator, mover_id))
+            _event(conn, mover_id, "archived", operator, {"from": row["status"]})
     return {"id": mover_id, "status": "archived"}
+
+
+def _write_notes(conn, mover_id: str, notes: MoverNotes, operator: str) -> None:
+    """Write the notes fields that were sent (null clears one) and log a new score."""
+    fields = sorted(notes.model_fields_set)
+    if not fields:
+        return
+    values = []
+    for f in fields:
+        v = getattr(notes, f)
+        if f == "score" and v is not None:
+            v = Jsonb(v.model_dump() | {"scored_at": svlib.today_pt().isoformat(), "scored_by": operator})
+        values.append(v)
+    conn.execute(
+        f"insert into mover_notes (mover_id, {', '.join(fields)}, updated_by) values (%s, {', '.join(['%s'] * len(fields))}, %s) "
+        f"on conflict (mover_id) do update set {', '.join(f'{f} = excluded.{f}' for f in fields)}, "
+        "updated_by = excluded.updated_by, updated_at = now()",
+        (mover_id, *values, operator),
+    )
+    if notes.score is not None:
+        _event(conn, mover_id, "scored", operator, {"total": notes.score.total, "market": notes.score.market})
+
+
+@app.post("/v1/ingest/movers/{mover_id}/notes")
+def mover_notes(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: MoverNotes,
+                operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """Update only the founders' take or score (e.g. after an office-hours run),
+    without resending the public facts."""
+    if not body.model_fields_set:
+        raise HTTPException(422, "send at least one of take, learn, localize, score")
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        _write_notes(conn, mover_id, body, operator)
+    return {"id": mover_id, "updated": sorted(body.model_fields_set),
+            "score": body.score.total if body.score is not None else None}
+
+
+@app.get("/v1/ingest/movers/feedback")
+def mover_feedback(operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """What the founders thought of each mover: votes with reasons, stage,
+    status and score. A run reads this before proposing more, so it learns
+    what they want (more like the upvoted, none like the passed)."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            f"select m.id, m.name, m.kind, m.tags, m.markets_live, m.status, coalesce(mn.stage, 'new') stage, "
+            f"(mn.score->>'total')::int score, mn.score->>'market' score_market, "
+            f"coalesce(v.votes, '[]') votes, coalesce(v.net, 0) net_votes from movers m {DESK_JOINS} "
+            "order by m.updated_at desc"
+        ).fetchall()
+    return {"movers": [_mover_json(r) for r in rows]}
