@@ -372,3 +372,40 @@ def test_state_dir_follows_the_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("KEEPING_UP_SV_STATE")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     assert charts.state_dir() == tmp_path / "xdg" / "keeping-up-sv"
+
+
+# ---------------------------------------------------------------- essays
+
+
+def test_essay_feeds_are_opinion_and_blocked_ones_stay_off():
+    by_id = {s["id"]: s for s in json.loads(SKILL_SOURCES.read_text())["sources"]}
+    for sid in ("sam-altman", "simon-willison", "elad-gil", "benedict-evans", "karpathy", "dwarkesh", "andrew-chen",
+                "interconnected", "chinai", "sajith-pai"):
+        s = by_id[sid]
+        assert s["kind"] == "rss" and s["category"] == "analysis" and s["claim"] == "opinion", sid
+        assert all(u.startswith("https://") for u in s.get("urls") or [s["url"]]), sid
+    assert by_id["stripe-blog"]["claim"] == "confirmed"   # the company announcing its own news
+    for sid in ("paul-graham", "naval", "stratechery"):
+        assert by_id[sid]["enabled"] is False and by_id[sid]["disabled_reason"], sid
+    ids = [s["id"] for s in by_id.values()]
+    assert len(ids) == len(set(ids)) and all(len(i) <= 32 for i in ids)
+    enabled = [s for s in by_id.values() if s.get("enabled", True)]
+    assert len(enabled) <= 80   # the API takes at most 80 source statuses per run
+
+
+ESSAY_ATOM = b"""<?xml version="1.0" encoding="UTF-8"?><feed xml:lang="en-US" xmlns="http://www.w3.org/2005/Atom">
+<entry><published>2026-10-21T22:55:13Z</published><updated>2026-10-22T19:13:05Z</updated>
+<link rel="alternate" type="text/html" href="https://blog.example.com/2279512"/><title>-</title>
+<content type="html">&lt;p&gt;A photo post with no real title.&lt;/p&gt;</content></entry>
+<entry><published>2026-10-21T16:00:00Z</published><link rel="alternate" type="text/html" href="https://blog.example.com/the-firm-as-a-mind"/>
+<title>The firm as a mind: what superintelligent companies do with pricing</title>
+<content type="html">&lt;p&gt;Companies that learn from every transaction will price like a market of one.&lt;/p&gt;</content></entry>
+</feed>"""
+
+
+def test_an_essay_feed_skips_untitled_posts(monkeypatch):
+    monkeypatch.setattr(collect, "fetch", lambda url, **kw: ESSAY_ATOM)
+    src = {"id": "essay", "name": "An Operator", "kind": "rss", "url": "x", "weight": 12, "category": "analysis", "claim": "opinion"}
+    cands, fetched = collect.collect_rss(src, *WINDOW)
+    assert fetched == 2 and [c["url"] for c in cands] == ["https://blog.example.com/the-firm-as-a-mind"]
+    assert cands[0]["claim_status"] == "opinion" and cands[0]["excerpt"].startswith("Companies that learn")

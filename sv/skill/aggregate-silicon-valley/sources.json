@@ -257,6 +257,164 @@
       "disabled_reason": "Answers 403 to automated feed readers (checked 2026-10-22); we respect the block instead of working around it."
     },
     {
+      "id": "sam-altman",
+      "name": "Sam Altman",
+      "kind": "rss",
+      "url": "https://blog.samaltman.com/posts.atom",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "simon-willison",
+      "name": "Simon Willison",
+      "kind": "rss",
+      "url": "https://simonwillison.net/atom/entries/",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "elad-gil",
+      "name": "Elad Gil",
+      "kind": "rss",
+      "url": "https://blog.eladgil.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "benedict-evans",
+      "name": "Benedict Evans",
+      "kind": "rss",
+      "url": "https://www.ben-evans.com/benedictevans?format=rss",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "karpathy",
+      "name": "Andrej Karpathy",
+      "kind": "rss",
+      "urls": [
+        "https://karpathy.bearblog.dev/feed/",
+        "https://karpathy.github.io/feed.xml"
+      ],
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "dwarkesh",
+      "name": "Dwarkesh Patel",
+      "kind": "rss",
+      "url": "https://www.dwarkesh.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "andrew-chen",
+      "name": "Andrew Chen",
+      "kind": "rss",
+      "url": "https://andrewchen.substack.com/feed",
+      "weight": 11,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "naval",
+      "name": "Naval",
+      "kind": "rss",
+      "url": "https://nav.al/feed",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "Answers 403 to the collector (checked 2026-10-22); we respect the block instead of working around it."
+    },
+    {
+      "id": "stripe-blog",
+      "name": "Stripe",
+      "kind": "rss",
+      "url": "https://stripe.com/blog/feed.rss",
+      "weight": 12,
+      "filter": false,
+      "category": "news",
+      "claim": "confirmed",
+      "tags": [
+        "fintech"
+      ]
+    },
+    {
+      "id": "interconnected",
+      "name": "Interconnected (Kevin Xu)",
+      "kind": "rss",
+      "url": "https://interconnected.blog/rss/",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "chinai",
+      "name": "ChinAI (Jeffrey Ding)",
+      "kind": "rss",
+      "url": "https://chinai.substack.com/feed",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "sajith-pai",
+      "name": "Sajith Pai (Blume Ventures)",
+      "kind": "rss",
+      "url": "https://sajithpai.substack.com/feed",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "vc"
+      ]
+    },
+    {
+      "id": "paul-graham",
+      "name": "Paul Graham",
+      "kind": "rss",
+      "url": "http://www.aaronsw.com/2002/feeds/pgessays.rss",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "paulgraham.com has no feed of its own. The only public feed of his essays (scraped by aaronsw.com) stops at 'Superlinear Returns' (2023) and has no dates (checked 2026-10-22). Hacker News carries new essays within hours."
+    },
+    {
       "id": "openai",
       "name": "OpenAI",
       "kind": "rss",
