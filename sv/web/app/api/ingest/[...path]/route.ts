@@ -2,6 +2,7 @@ import { revalidateTag } from 'next/cache';
 import type { NextRequest } from 'next/server';
 
 import { CACHE_TAG, forwardIngest } from '@/lib/api';
+import { ingestPathAllowed } from '@/lib/ingestPaths';
 
 // The Claude Code aggregation run talks to this stable URL; it forwards to the
 // VM API with the caller's own ingest token, which the VM checks. This server
@@ -17,7 +18,7 @@ async function handle(req: NextRequest, params: Promise<{ path: string[] }>, met
   const { path } = await params;
   const auth = req.headers.get('authorization') ?? '';
   if (!auth.startsWith('Bearer ')) return Response.json({ detail: 'missing bearer token' }, { status: 401 });
-  if (!path.length || path.length > 4 || !path.every((s) => SEGMENT.test(s))) {
+  if (!path.length || path.length > 4 || !path.every((s) => SEGMENT.test(s)) || !ingestPathAllowed(method, path)) {
     return Response.json({ detail: 'unsupported path' }, { status: 404 });
   }
   let body: string | undefined;
