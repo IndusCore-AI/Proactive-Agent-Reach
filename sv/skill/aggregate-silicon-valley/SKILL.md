@@ -119,6 +119,44 @@ edition, inserted/updated/merged/rejected, sources that worked and those that fa
 whether the database and page checks passed, and the run status (`complete` or `partial`). Say plainly if
 anything failed.
 
+## Movers to watch
+
+`https://induscore.site/sv/movers` lists companies, apps and skills gaining traction, kept apart from the
+daily news. **Add or change a mover only when a founder asks you to.** The daily run never creates one.
+
+**In the daily run**, after step 4: `python3 -I scripts/ingest.py movers --list` prints the existing movers.
+When a story you just published is clearly about one of them (the company raised, the app launched in a new
+market, the skill shipped a release), link it:
+`python3 -I scripts/ingest.py link <mover-id> <story-url> [<story-url> ...]`. Link only clear matches; a
+passing mention is not one. Missing stories are reported, never created.
+
+**When a founder asks to add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
+(never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py movers <file.json>`:
+
+```json
+{"movers": [{
+  "id": "example-robotics", "name": "Example Robotics", "kind": "company",
+  "url": "https://example.com", "one_liner": "Robot arms for small kitchens (max 200 chars).",
+  "summary": "Neutral facts only, max 800 chars.",
+  "traction": [{"label": "Restaurants live", "value": "120", "source_url": "https://example.com/blog/120", "as_of": "2026-10-01"}],
+  "markets_live": ["US", "UK"], "claim_status": "confirmed", "tags": ["robotics"],
+  "image_url": "https://example.com/logo.png", "image_kind": "logo",
+  "notes": {"take": "How it helps us", "learn": "What to learn", "localize": "Where to localize"},
+  "item_urls": ["https://techcrunch.com/..."]
+}]}
+```
+
+- Everything except `notes` is **public** and indexed: what it is, its traction, its sources. Every traction
+  line needs a `source_url` (https) you actually opened and the date the figure was true; no source, no line
+  (at most 8). `claim_status` is `confirmed` (the company states it), `reported` or `unverified`.
+- `notes` is the founders' **private** take; it is shown only after the founders' unlock and never in public
+  HTML, the sitemap, RSS, llms.txt or JSON-LD. Write it only from what the founder told you. Leaving a note
+  field out keeps what is stored; `null` clears it.
+- Reruns update by `id`. The script checks the file first, then verifies every mover is stored and that its
+  public page shows the name and **none** of the note text; exit code 0 means both passed.
+- `python3 -I scripts/ingest.py archive <mover-id>` stops watching one (it leaves the site; the founder can
+  restore it by sending it again with `"status": "watching"`).
+
 ## When something is wrong
 
 - `could not start a run: HTTP 502` / `feed API unreachable`: the VM API or its tunnel is down. On the VM:
