@@ -2,9 +2,11 @@
 database. Runs on the prod VM on 127.0.0.1 only; the public site reaches it
 through its own Cloudflare quick tunnel (see ../ops).
 
-Two kinds of caller, two kinds of token:
-  read    the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
-  ingest  a founder's Claude Code run (rows in ingest_tokens, one per person)
+Three kinds of caller, three kinds of token:
+  read     the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
+  private  the Vercel server, only for a founders-unlocked page: the founders'
+           own take on each mover (SV_PRIVATE_READ_TOKEN_SHA256, a different token)
+  ingest   a founder's Claude Code run (rows in ingest_tokens, one per person)
 Tokens are compared by sha256, so neither the env file nor the database holds
 a usable secret.
 """
@@ -21,23 +23,30 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query, Response
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skill" / "aggregate-silicon-valley" / "scripts"))
 import svlib  # noqa: E402  (the one copy of the URL / duplicate rules, shared with the skill)
 
 DATABASE_URL = os.environ.get("SV_DATABASE_URL", "postgresql:///induscore_sv")
 READ_TOKEN_SHA256 = os.environ.get("SV_READ_TOKEN_SHA256", "")
+PRIVATE_TOKEN_SHA256 = os.environ.get("SV_PRIVATE_READ_TOKEN_SHA256", "")
 FIRST_EDITION = date(2026, 1, 1)
 STALE_RUN = timedelta(hours=3)
 
 Category = Literal["funding", "acquisition", "launch", "news", "discussion", "analysis"]
 ClaimStatus = Literal["confirmed", "reported", "unverified", "opinion"]
 Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
+Tag = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]
+MOVER_ID = r"^[a-z0-9][a-z0-9-]{1,59}$"
+# Site paths under /movers/ that a mover id must never shadow.
+RESERVED_MOVER_IDS = {"unlock", "lock"}
+MoverKind = Literal["company", "app", "skill"]
+MoverClaim = Literal["confirmed", "reported", "unverified"]
 
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
 
@@ -68,6 +77,18 @@ def require_read(authorization: Annotated[str | None, Header()] = None) -> None:
         raise HTTPException(403, "invalid read token")
 
 
+def require_private(authorization: Annotated[str | None, Header()] = None) -> None:
+    """The founders' take. Its own token: the read token never opens it, and a
+    deployment where both tokens are the same is refused outright."""
+    token = _bearer(authorization)
+    if (
+        not PRIVATE_TOKEN_SHA256
+        or hmac.compare_digest(PRIVATE_TOKEN_SHA256, READ_TOKEN_SHA256)
+        or not hmac.compare_digest(_sha256(token), PRIVATE_TOKEN_SHA256)
+    ):
+        raise HTTPException(403, "invalid private read token")
+
+
 def require_ingest(authorization: Annotated[str | None, Header()] = None) -> str:
     token_hash = _sha256(_bearer(authorization))
     with pool.connection() as conn:
@@ -80,6 +101,28 @@ def require_ingest(authorization: Annotated[str | None, Header()] = None) -> str
 
 
 # ---------------------------------------------------------------- payloads
+
+def _one_line(v: str | None) -> str | None:
+    """Collapse whitespace; refuse markup. Used for every public text field."""
+    if v is None:
+        return None
+    v = " ".join(v.split())
+    if "<" in v and ">" in v:
+        raise ValueError("markup is not allowed")
+    return v or None
+
+
+def _https_image(v: str | None) -> str | None:
+    """A link to the publisher's own image: plain https, public host. The
+    original string is kept (CDNs need their query)."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v.startswith("https://") or any(c.isspace() for c in v) or any(c in v for c in "<>\"'"):
+        raise ValueError("image_url must be a plain https URL")
+    svlib.canonical_url(v)  # same public-host rules as story URLs
+    return v
+
 
 class Funding(BaseModel):
     company: str = Field(min_length=1, max_length=120)
@@ -108,7 +151,7 @@ class ItemIn(BaseModel):
     source: Slug
     source_name: str = Field(min_length=1, max_length=60)
     category: Category
-    tags: list[Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]] = Field(default_factory=list, max_length=8)
+    tags: list[Tag] = Field(default_factory=list, max_length=8)
     excerpt: str | None = Field(default=None, max_length=400)
     summary: str | None = Field(default=None, max_length=400)
     author: str | None = Field(default=None, max_length=120)
@@ -130,23 +173,12 @@ class ItemIn(BaseModel):
     @field_validator("image_url")
     @classmethod
     def _image(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = v.strip()
-        if not v.startswith("https://") or any(c.isspace() for c in v) or any(c in v for c in "<>\"'"):
-            raise ValueError("image_url must be a plain https URL")
-        svlib.canonical_url(v)  # same public-host rules as story URLs; the original string is kept
-        return v
+        return _https_image(v)
 
     @field_validator("title", "excerpt", "summary", "author", "source_name")
     @classmethod
     def _clean(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = " ".join(v.split())
-        if "<" in v and ">" in v:
-            raise ValueError("markup is not allowed")
-        return v or None
+        return _one_line(v)
 
     @field_validator("published_at")
     @classmethod
@@ -196,6 +228,117 @@ class RunFinish(BaseModel):
     sources: list[SourceStatus] = Field(default_factory=list, max_length=80)
     errors: list[Annotated[str, Field(max_length=500)]] = Field(default_factory=list, max_length=100)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class Traction(BaseModel):
+    """One traction fact, as its source states it, with the date it was true."""
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)      # "Paying customers"
+    value: str = Field(min_length=1, max_length=120)      # "1,200"
+    source_url: str                                       # required: no source, no line
+    as_of: date
+
+    @field_validator("label", "value")
+    @classmethod
+    def _clean(cls, v: str) -> str:
+        out = _one_line(v)
+        if not out:
+            raise ValueError("must not be blank")
+        return out
+
+    @field_validator("source_url")
+    @classmethod
+    def _source(cls, v: str) -> str:
+        url = svlib.canonical_url(v)
+        if not url.startswith("https://"):
+            raise ValueError("source_url must be an https URL")
+        return url
+
+    @field_validator("as_of")
+    @classmethod
+    def _as_of(cls, v: date) -> date:
+        if v > svlib.today_pt() + timedelta(days=1):
+            raise ValueError("as_of is in the future")
+        return v
+
+
+class MoverNotes(BaseModel):
+    """The founders' private take. Fields left out are kept as they are;
+    a field sent as null is cleared."""
+    model_config = ConfigDict(extra="forbid")
+    take: str | None = Field(default=None, max_length=1500)       # how it helps us
+    learn: str | None = Field(default=None, max_length=1000)      # what to learn
+    localize: str | None = Field(default=None, max_length=1000)   # where to localize
+
+    @field_validator("take", "learn", "localize")
+    @classmethod
+    def _text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        lines = [" ".join(line.split()) for line in v.replace("\r\n", "\n").split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() or None
+
+
+class MoverIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Annotated[str, Field(pattern=MOVER_ID)]
+    name: str = Field(min_length=1, max_length=120)
+    kind: MoverKind
+    url: str
+    one_liner: str = Field(min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=800)
+    traction: list[Traction] = Field(default_factory=list, max_length=8)
+    markets_live: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(default_factory=list, max_length=8)
+    claim_status: MoverClaim = "reported"
+    tags: list[Tag] = Field(default_factory=list, max_length=8)
+    image_url: str | None = Field(default=None, max_length=1000)
+    image_kind: Literal["cover", "logo"] | None = None
+    status: Literal["watching", "archived"] | None = None   # omitted: new movers watch, existing ones keep theirs
+    notes: MoverNotes | None = None
+    item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=50)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if v in RESERVED_MOVER_IDS:
+            raise ValueError(f"id {v!r} is reserved")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        return svlib.canonical_url(v)
+
+    @field_validator("image_url")
+    @classmethod
+    def _image(cls, v: str | None) -> str | None:
+        return _https_image(v)
+
+    @field_validator("name", "one_liner", "summary")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @field_validator("name", "one_liner")
+    @classmethod
+    def _required(cls, v: str | None) -> str:
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("markets_live")
+    @classmethod
+    def _markets(cls, v: list[str]) -> list[str]:
+        out = [m for m in (_one_line(x) for x in v) if m]
+        return list(dict.fromkeys(out))
+
+
+class MoversIn(BaseModel):
+    movers: list[dict[str, Any]] = Field(max_length=50)   # validated one by one, like items
+
+
+class LinkIn(BaseModel):
+    item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(min_length=1, max_length=50)
 
 
 # ---------------------------------------------------------------- read side
@@ -330,8 +473,13 @@ def item(item_id: Annotated[str, PathParam(pattern=r"^[a-z2-7]{12}$")]) -> dict:
             "f.feed_date desc, i.score desc limit 6",
             (item_id, row["tags"] or ["-"], (row["funding"] or {}).get("company"), row["tags"] or []),
         ).fetchall()
+        movers = conn.execute(
+            "select m.id, m.name, m.kind from mover_items mi join movers m on m.id = mi.mover_id "
+            "where mi.item_id = %s and m.status = 'watching' order by m.name", (item_id,)
+        ).fetchall()
     out = _item_json(row, mentions)
     out["related"] = [_item_json(r) for r in related]
+    out["movers"] = [{"id": m["id"], "name": m["name"], "kind": m["kind"]} for m in movers]
     return out
 
 
@@ -389,7 +537,95 @@ def sitemap() -> dict:
             "select i.id, i.title, i.updated_at, f.feed_date from items i join feed_entries f on f.item_id = i.id "
             "order by f.feed_date desc, f.rank limit 45000"
         ).fetchall()
-    return {"items": [{"id": r["id"], "title": r["title"], "updated_at": _iso(r["updated_at"]), "date": _iso(r["feed_date"])} for r in items]}
+        movers = conn.execute(
+            "select m.id, greatest(m.updated_at, max(mi.added_at)) updated_at from movers m "
+            "left join mover_items mi on mi.mover_id = m.id where m.status = 'watching' group by m.id order by m.id"
+        ).fetchall()
+    return {
+        "items": [{"id": r["id"], "title": r["title"], "updated_at": _iso(r["updated_at"]), "date": _iso(r["feed_date"])} for r in items],
+        "movers": [{"id": r["id"], "updated_at": _iso(r["updated_at"])} for r in movers],
+    }
+
+
+# Public mover facts. The column list is explicit on purpose: the founders'
+# take is in mover_notes and never joined here; who added a mover stays out too.
+MOVER_COLUMNS = """
+    m.id, m.name, m.kind, m.url, m.one_liner, m.summary, m.traction, m.markets_live, m.claim_status,
+    m.tags, m.image_url, m.image_kind, m.first_added_at, m.updated_at
+"""
+MOVER_NEWS = """
+    left join lateral (
+        select count(*) news_count, max(coalesce(i.published_at, i.discovered_at)) latest_news_at
+        from mover_items mi join items i on i.id = mi.item_id where mi.mover_id = m.id
+    ) n on true
+"""
+
+
+def _mover_json(row: dict) -> dict:
+    return {k: _iso(v) for k, v in row.items()}
+
+
+@app.get("/v1/movers", dependencies=[Depends(require_read)])
+def movers(
+    kind: MoverKind | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 60,
+    offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+) -> dict:
+    """Movers being watched, most recently active first, with how many stories feed each."""
+    where, args = ["m.status = 'watching'"], []
+    if kind:
+        where.append("m.kind = %s"); args.append(kind)
+    cond = " and ".join(where)
+    with pool.connection() as conn:
+        total = conn.execute(f"select count(*) n from movers m where {cond}", args).fetchone()["n"]
+        rows = conn.execute(
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at from movers m {MOVER_NEWS} where {cond} "
+            "order by greatest(m.updated_at, n.latest_news_at) desc, m.name limit %s offset %s", [*args, limit, offset]
+        ).fetchall()
+        kinds = conn.execute(
+            "select coalesce(jsonb_object_agg(kind, n), '{}') k from (select kind, count(*) n from movers "
+            "where status = 'watching' group by kind) t"
+        ).fetchone()["k"]
+    return {"total": total, "movers": [_mover_json(r) for r in rows], "facets": {"kinds": kinds}}
+
+
+@app.get("/v1/movers/{mover_id}", dependencies=[Depends(require_read)])
+def mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)]) -> dict:
+    with pool.connection() as conn:
+        row = conn.execute(
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at from movers m {MOVER_NEWS} "
+            "where m.id = %s and m.status = 'watching'", (mover_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "no such mover")
+        items = conn.execute(
+            f"select {ITEM_COLUMNS}, f.feed_date from mover_items mi join items i on i.id = mi.item_id "
+            "left join feed_entries f on f.item_id = i.id where mi.mover_id = %s "
+            "order by coalesce(i.published_at, i.discovered_at) desc limit 20", (mover_id,)
+        ).fetchall()
+        mentions = _mentions_for(conn, [r["id"] for r in items])
+    return _mover_json(row) | {"items": [_item_json(r, mentions[r["id"]]) for r in items]}
+
+
+# ---------------------------------------------------------------- private side
+
+@app.get("/v1/private/movers", dependencies=[Depends(require_private)])
+def private_movers(response: Response, ids: Annotated[str | None, Query(max_length=6200)] = None) -> dict:
+    """The founders' take, keyed by mover id. Only a founders-unlocked page asks."""
+    response.headers["Cache-Control"] = "no-store"
+    wanted: list[str] | None = None
+    if ids is not None:
+        wanted = [x for x in ids.split(",") if x]
+        if len(wanted) > 100 or not all(re.fullmatch(MOVER_ID, x) for x in wanted):
+            raise HTTPException(422, "ids must be at most 100 comma-separated mover ids")
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select mover_id, take, learn, localize, updated_at from mover_notes"
+            + (" where mover_id = any(%s)" if wanted is not None else "") + " order by mover_id",
+            (wanted,) if wanted is not None else (),
+        ).fetchall()
+    return {r["mover_id"]: {"take": r["take"], "learn": r["learn"], "localize": r["localize"],
+                            "updated_at": _iso(r["updated_at"])} for r in rows}
 
 
 # ---------------------------------------------------------------- ingest side
@@ -603,3 +839,131 @@ def edition_ids(feed_date: date, operator: Annotated[str, Depends(require_ingest
         "items": [dict(r) for r in rows],
         "runs": [{k: (str(v) if k == "id" else _iso(v)) for k, v in r.items()} for r in runs],
     }
+
+
+# ---------------------------------------------------------------- movers (ingest)
+#
+# Movers are added only when a founder asks; no run is involved. Each write
+# records the operator. Notes go to mover_notes and nowhere else.
+
+def _resolve_items(conn, urls: list[str]) -> tuple[list[str], list[str]]:
+    """Item ids for story URLs that exist (as an item, or as a recorded
+    sighting of one); the URLs that match nothing are returned as missing."""
+    found: list[str] = []
+    missing: list[str] = []
+    for raw in urls:
+        try:
+            url = svlib.canonical_url(raw)
+        except ValueError:
+            missing.append(raw[:300])
+            continue
+        row = conn.execute(
+            "(select id, 0 p from items where id = %s or url = %s) "
+            "union all (select item_id, 1 from mentions where url = %s) order by p limit 1",
+            (svlib.item_id(url), url, url),
+        ).fetchone()
+        if row:
+            found.append(row["id"])
+        else:
+            missing.append(url)
+    return list(dict.fromkeys(found)), missing
+
+
+def _link(conn, mover_id: str, item_ids: list[str]) -> int:
+    for iid in item_ids:
+        conn.execute("insert into mover_items (mover_id, item_id) values (%s, %s) on conflict do nothing", (mover_id, iid))
+    return len(item_ids)
+
+
+def _upsert_mover(conn, m: MoverIn, operator: str) -> bool:
+    """Insert or replace a mover's public facts; True when it is new."""
+    row = conn.execute(
+        """insert into movers (id, name, kind, url, one_liner, summary, traction, markets_live, claim_status, tags,
+               image_url, image_kind, status, added_by, updated_by)
+           values (%(id)s, %(name)s, %(kind)s, %(url)s, %(one_liner)s, %(summary)s, %(traction)s, %(markets)s,
+               %(claim)s, %(tags)s, %(image_url)s, %(image_kind)s, coalesce(%(status)s, 'watching'), %(op)s, %(op)s)
+           on conflict (id) do update set
+               name = excluded.name, kind = excluded.kind, url = excluded.url, one_liner = excluded.one_liner,
+               summary = excluded.summary, traction = excluded.traction, markets_live = excluded.markets_live,
+               claim_status = excluded.claim_status, tags = excluded.tags, image_url = excluded.image_url,
+               image_kind = excluded.image_kind, status = coalesce(%(status)s, movers.status),
+               updated_by = excluded.updated_by, updated_at = now()
+           returning (xmax = 0) as inserted""",
+        {
+            "id": m.id, "name": m.name, "kind": m.kind, "url": m.url, "one_liner": m.one_liner, "summary": m.summary,
+            "traction": Jsonb([t.model_dump(mode="json") for t in m.traction]), "markets": m.markets_live,
+            "claim": m.claim_status, "tags": list(dict.fromkeys(m.tags)), "image_url": m.image_url,
+            "image_kind": m.image_kind if m.image_url else None, "status": m.status, "op": operator,
+        },
+    ).fetchone()
+    if m.notes is not None and m.notes.model_fields_set:
+        fields = sorted(m.notes.model_fields_set)          # a subset of take / learn / localize (extra fields are refused)
+        cols = ", ".join(fields)
+        conn.execute(
+            f"insert into mover_notes (mover_id, {cols}, updated_by) values (%s, {', '.join(['%s'] * len(fields))}, %s) "
+            f"on conflict (mover_id) do update set {', '.join(f'{f} = excluded.{f}' for f in fields)}, "
+            "updated_by = excluded.updated_by, updated_at = now()",
+            (m.id, *[getattr(m.notes, f) for f in fields], operator),
+        )
+    return bool(row["inserted"])
+
+
+def _mover_exists(conn, mover_id: str) -> None:
+    if not conn.execute("select 1 from movers where id = %s", (mover_id,)).fetchone():
+        raise HTTPException(404, "no such mover")
+
+
+@app.post("/v1/ingest/movers")
+def ingest_movers(body: MoversIn, operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    results, counts = [], {"inserted": 0, "updated": 0, "rejected": 0}
+    with pool.connection() as conn:
+        for index, raw in enumerate(body.movers):
+            try:
+                m = MoverIn.model_validate(raw)
+            except Exception as exc:  # pydantic ValidationError or a URL ValueError
+                counts["rejected"] += 1
+                results.append({"index": index, "id": raw.get("id") if isinstance(raw.get("id"), str) else None,
+                                "outcome": "rejected", "reason": str(exc)[:500]})
+                continue
+            try:
+                with conn.transaction():
+                    inserted = _upsert_mover(conn, m, operator)
+                    ids, missing = _resolve_items(conn, m.item_urls)
+                    linked = _link(conn, m.id, ids)
+            except Exception as exc:
+                counts["rejected"] += 1
+                results.append({"index": index, "id": m.id, "outcome": "rejected", "reason": f"database: {exc}"[:300]})
+                continue
+            outcome = "inserted" if inserted else "updated"
+            counts[outcome] += 1
+            results.append({"index": index, "id": m.id, "outcome": outcome, "linked": linked, "missing": missing,
+                            "notes": bool(m.notes and m.notes.model_fields_set)})
+    return {"operator": operator, **counts, "results": results}
+
+
+@app.get("/v1/ingest/movers")
+def ingest_mover_list(operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """Every mover (watching or archived), so a run can match stories to them."""
+    with pool.connection() as conn:
+        rows = conn.execute("select id, name, kind, url, status from movers order by name").fetchall()
+    return {"movers": [dict(r) for r in rows]}
+
+
+@app.post("/v1/ingest/movers/{mover_id}/link")
+def link_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: LinkIn,
+               operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    with pool.connection() as conn:
+        _mover_exists(conn, mover_id)
+        ids, missing = _resolve_items(conn, body.item_urls)
+        linked = _link(conn, mover_id, ids)
+    return {"id": mover_id, "linked": linked, "missing": missing}
+
+
+@app.post("/v1/ingest/movers/{mover_id}/archive")
+def archive_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)],
+                  operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    with pool.connection() as conn:
+        _mover_exists(conn, mover_id)
+        conn.execute("update movers set status = 'archived', updated_by = %s, updated_at = now() where id = %s",
+                     (operator, mover_id))
+    return {"id": mover_id, "status": "archived"}

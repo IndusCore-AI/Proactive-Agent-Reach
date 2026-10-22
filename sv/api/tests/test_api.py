@@ -20,8 +20,10 @@ pytest.importorskip("fastapi")
 psycopg = pytest.importorskip("psycopg")
 
 READ = "test-read-token"
+PRIVATE = "test-private-token"
 os.environ["SV_DATABASE_URL"] = TEST_DB
 os.environ["SV_READ_TOKEN_SHA256"] = hashlib.sha256(READ.encode()).hexdigest()
+os.environ["SV_PRIVATE_READ_TOKEN_SHA256"] = hashlib.sha256(PRIVATE.encode()).hexdigest()
 
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -45,6 +47,7 @@ def client():
     with TestClient(api.app) as c:
         c.ingest = {"Authorization": f"Bearer {token}"}
         c.read = {"Authorization": f"Bearer {READ}"}
+        c.private = {"Authorization": f"Bearer {PRIVATE}"}
         yield c
 
 
@@ -189,3 +192,187 @@ def test_finish_twice_conflicts(client):
     assert client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest).status_code == 200
     assert client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest).status_code == 409
     assert client.post(f"/v1/ingest/runs/{run}/items", json={"items": [item()]}, headers=client.ingest).status_code == 409
+
+
+# ---------------------------------------------------------------- movers
+
+ACME_URL = "https://techcrunch.com/2026/10/21/acme-raises-12m-series-a"
+NOTE_TEXT = ("TAKE-only-for-founders-7f3a", "LEARN-only-for-founders-9b1c", "LOCALIZE-only-for-founders-2d4e")
+NOTE_KEYS = {"take", "learn", "localize"}
+
+
+def mover(**kw):
+    base = {
+        "id": "example-robotics", "name": "Example Robotics", "kind": "company",
+        "url": "https://www.example.com/?utm_source=x", "one_liner": "Robot arms for small kitchens.",
+        "summary": "Example Robotics sells a countertop robot arm to independent restaurants.",
+        "traction": [{"label": "Restaurants live", "value": "120", "source_url": "https://example.com/blog/120",
+                      "as_of": "2026-10-01"}],
+        "markets_live": ["US", "UK"], "claim_status": "confirmed", "tags": ["robotics"],
+        "image_url": "https://cdn.example.com/logo.png", "image_kind": "logo",
+    }
+    base.update(kw)
+    return base
+
+
+def post_movers(client, movers):
+    r = client.post("/v1/ingest/movers", json={"movers": movers}, headers=client.ingest)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def keys_in(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {k for v in value.values() for k in keys_in(v)}
+    if isinstance(value, list):
+        return {k for v in value for k in keys_in(v)}
+    return set()
+
+
+def test_mover_traction_needs_a_source(client):
+    line = {"label": "Users", "value": "10k", "as_of": "2026-10-01"}
+    bad = [
+        mover(traction=[line]),                                                     # no source at all
+        mover(traction=[{**line, "source_url": ""}]),
+        mover(traction=[{**line, "source_url": "http://example.com/plain-http"}]),
+        mover(traction=[{**line, "source_url": "https://localhost/x"}]),
+        mover(traction=[{**line, "source_url": "https://example.com/a", "as_of": "2999-01-01"}]),
+        mover(traction=[{**line, "source_url": f"https://example.com/{i}"} for i in range(9)]),
+        mover(id="unlock"), mover(id="Example_Robotics"), mover(id="x"),
+        mover(kind="person"), mover(claim_status="opinion"), mover(one_liner="x" * 201),
+        mover(take="top-level notes are refused, not dropped"),
+        mover(notes={"takes": "typo"}),
+        mover(name="<b>Example</b>"),
+        mover(image_url="http://cdn.example.com/logo.png"),
+    ]
+    r = post_movers(client, bad)
+    assert (r["inserted"], r["updated"], r["rejected"]) == (0, 0, len(bad)), r
+    assert "source_url" in r["results"][0]["reason"]
+    assert client.post("/v1/ingest/movers", json={"movers": [mover()]}, headers=client.read).status_code == 403
+    assert client.post("/v1/ingest/movers", json={"movers": [mover()] * 51}, headers=client.ingest).status_code == 422
+
+
+def test_mover_ingest_links_and_reports_missing(client):
+    take, learn, localize = NOTE_TEXT
+    r = post_movers(client, [
+        mover(notes={"take": take, "learn": learn, "localize": localize},
+              item_urls=[ACME_URL + "?utm_campaign=x", "https://www.ycombinator.com/launches/abc-widgets",
+                         "https://example.com/never-ingested", "javascript:alert(1)"]),
+        mover(id="example-notes-app", name="Example Notes App", kind="app", one_liner="A notes app for field teams.",
+              traction=[], markets_live=["India"], claim_status="unverified", image_url=None, image_kind=None),
+    ])
+    assert (r["inserted"], r["rejected"]) == (2, 0), r
+    first = r["results"][0]
+    assert first["outcome"] == "inserted" and first["linked"] == 2 and first["notes"] is True
+    assert first["missing"] == ["https://example.com/never-ingested", "javascript:alert(1)"]
+
+    # A story merged into another is found through its recorded sighting.
+    linked = client.post("/v1/ingest/movers/example-robotics/link", headers=client.ingest, json={"item_urls": [
+        "https://siliconangle.com/2026/10/21/acme-raises-12m-series-robot-kitchens/",
+        "https://x.com/founder/status/1850000000000000001", "https://example.com/nope"]}).json()
+    assert linked == {"id": "example-robotics", "linked": 2, "missing": ["https://example.com/nope"]}
+    assert client.post("/v1/ingest/movers/no-such-mover/link", json={"item_urls": [ACME_URL]},
+                       headers=client.ingest).status_code == 404
+
+    one = client.get("/v1/movers/example-robotics", headers=client.read).json()
+    assert one["news_count"] == 3 and len(one["items"]) == 3
+    assert one["url"] == "https://www.example.com/" and one["traction"][0]["source_url"] == "https://example.com/blog/120"
+    stamps = [i["published_at"] or i["discovered_at"] for i in one["items"]]
+    assert stamps == sorted(stamps, reverse=True)
+    acme = next(i for i in one["items"] if i["url"] == ACME_URL)
+    assert acme["feed_date"] and isinstance(acme["mentions"], list)
+
+    item = client.get(f"/v1/items/{acme['id']}", headers=client.read).json()
+    assert item["movers"] == [{"id": "example-robotics", "name": "Example Robotics", "kind": "company"}]
+
+    # Rerun: updates in place; a notes field left out is kept.
+    r2 = post_movers(client, [mover(one_liner="Robot arms for small restaurant kitchens.", notes={"take": take + " v2"})])
+    assert r2["results"][0]["outcome"] == "updated" and r2["results"][0]["linked"] == 0
+    notes = client.get("/v1/private/movers?ids=example-robotics", headers=client.private).json()
+    assert notes["example-robotics"]["take"] == take + " v2" and notes["example-robotics"]["learn"] == learn
+
+    listed = client.get("/v1/movers", headers=client.read).json()
+    assert listed["total"] == 2 and listed["facets"]["kinds"] == {"company": 1, "app": 1}
+    robo = next(m for m in listed["movers"] if m["id"] == "example-robotics")
+    assert robo["news_count"] == 3 and robo["latest_news_at"]
+    apps = client.get("/v1/movers?kind=app", headers=client.read).json()
+    assert [m["id"] for m in apps["movers"]] == ["example-notes-app"] and apps["movers"][0]["news_count"] == 0
+    assert client.get("/v1/movers?kind=person", headers=client.read).status_code == 422
+    ids = client.get("/v1/ingest/movers", headers=client.ingest).json()["movers"]
+    assert {(m["id"], m["kind"]) for m in ids} == {("example-robotics", "company"), ("example-notes-app", "app")}
+
+
+def test_private_route_rejects_everything_but_its_own_token(client, monkeypatch):
+    assert client.get("/v1/private/movers").status_code == 401
+    assert client.get("/v1/private/movers", headers=client.read).status_code == 403
+    assert client.get("/v1/private/movers", headers=client.ingest).status_code == 403
+    assert client.get("/v1/private/movers", headers={"Authorization": "Bearer nope"}).status_code == 403
+    # The private token opens nothing else.
+    assert client.get("/v1/movers", headers=client.private).status_code == 403
+
+    ok = client.get("/v1/private/movers", headers=client.private)
+    assert ok.status_code == 200 and ok.headers["cache-control"] == "no-store"
+    assert set(ok.json()) == {"example-robotics"}            # the app has no notes
+    assert set(ok.json()["example-robotics"]) == {"take", "learn", "localize", "updated_at"}
+    assert client.get("/v1/private/movers?ids=example-notes-app", headers=client.private).json() == {}
+    assert client.get("/v1/private/movers?ids=Bad_Id", headers=client.private).status_code == 422
+
+    monkeypatch.setattr(api, "PRIVATE_TOKEN_SHA256", "")                     # not configured
+    assert client.get("/v1/private/movers", headers=client.private).status_code == 403
+    monkeypatch.setattr(api, "PRIVATE_TOKEN_SHA256", api.READ_TOKEN_SHA256)   # misconfigured as the read token
+    assert client.get("/v1/private/movers", headers=client.read).status_code == 403
+
+
+PUBLIC_GETS = {
+    "/v1/health": ["/v1/health"],
+    "/v1/feed": ["/v1/feed", "/v1/feed?category=funding"],
+    "/v1/dates": ["/v1/dates"],
+    "/v1/items/{item_id}": [f"/v1/items/{api.svlib.item_id(ACME_URL)}"],
+    "/v1/topics": ["/v1/topics"],
+    "/v1/topics/{tag}": ["/v1/topics/robotics"],
+    "/v1/search": ["/v1/search?q=robot"],
+    "/v1/sitemap": ["/v1/sitemap"],
+    "/v1/movers": ["/v1/movers", "/v1/movers?kind=company", "/v1/movers?kind=app"],
+    "/v1/movers/{mover_id}": ["/v1/movers/example-robotics", "/v1/movers/example-notes-app"],
+}
+
+
+def test_no_public_route_returns_the_founders_take(client):
+    # Every GET route outside /v1/private and /v1/ingest must be listed above,
+    # so a new public route cannot skip this check.
+    public = {r.path for r in api.app.routes if "GET" in getattr(r, "methods", set())
+              and not r.path.startswith(("/v1/private/", "/v1/ingest/"))}
+    assert public == set(PUBLIC_GETS), public ^ set(PUBLIC_GETS)
+    for urls in PUBLIC_GETS.values():
+        for url in urls:
+            r = client.get(url, headers=client.read)
+            assert r.status_code == 200, (url, r.text)
+            assert not keys_in(r.json()) & NOTE_KEYS, url
+            assert not any(t in r.text for t in NOTE_TEXT), url
+    # ...and the ingest listing, which a run reads, carries no notes either.
+    r = client.get("/v1/ingest/movers", headers=client.ingest)
+    assert not keys_in(r.json()) & NOTE_KEYS and not any(t in r.text for t in NOTE_TEXT)
+
+
+def test_archive_hides_mover_from_public_lists(client):
+    client.post("/v1/ingest/movers/example-notes-app/link", json={"item_urls": [ACME_URL]}, headers=client.ingest)
+    acme = api.svlib.item_id(ACME_URL)
+    assert len(client.get(f"/v1/items/{acme}", headers=client.read).json()["movers"]) == 2
+
+    r = client.post("/v1/ingest/movers/example-notes-app/archive", json={}, headers=client.ingest)
+    assert r.json() == {"id": "example-notes-app", "status": "archived"}
+    listed = client.get("/v1/movers", headers=client.read).json()
+    assert [m["id"] for m in listed["movers"]] == ["example-robotics"] and listed["facets"]["kinds"] == {"company": 1}
+    assert client.get("/v1/movers?kind=app", headers=client.read).json()["total"] == 0
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 404
+    assert [m["id"] for m in client.get("/v1/sitemap", headers=client.read).json()["movers"]] == ["example-robotics"]
+    assert [m["id"] for m in client.get(f"/v1/items/{acme}", headers=client.read).json()["movers"]] == ["example-robotics"]
+    assert client.post("/v1/ingest/movers/no-such-mover/archive", json={}, headers=client.ingest).status_code == 404
+
+    # A rerun of the founder's file keeps it archived unless it says otherwise.
+    app = mover(id="example-notes-app", name="Example Notes App", kind="app", one_liner="A notes app for field teams.",
+                traction=[], image_url=None, image_kind=None)
+    post_movers(client, [app])
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 404
+    post_movers(client, [{**app, "status": "watching"}])
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 200
