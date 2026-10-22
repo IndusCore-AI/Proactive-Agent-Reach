@@ -38,7 +38,8 @@ NOW = datetime.now(timezone.utc)
 @pytest.fixture(scope="module")
 def client():
     with psycopg.connect(TEST_DB, autocommit=True) as conn:
-        conn.execute("drop table if exists feed_entries, mentions, runs, items, ingest_tokens, schema_migrations cascade")
+        conn.execute("drop table if exists mover_items, mover_notes, movers, feed_entries, mentions, runs, items, ingest_tokens, "
+                     "schema_migrations cascade")
         manage.migrate(conn)
         token = manage.issue_token(conn, "tester")
     with TestClient(api.app) as c:
