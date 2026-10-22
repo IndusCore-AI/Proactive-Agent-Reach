@@ -75,8 +75,23 @@ OpenAI, Google AI, Hugging Face, GitHub Blog, Reddit (RSS). Limits:
 
 `/sv/movers` lists companies, apps and skills gaining traction that the founders want to learn from, kept
 apart from the daily news. A story can point at a mover (`mover_items`); its page then shows "Mover: <name>".
-Movers are added only when a founder asks (`ingest.py movers <file.json>`, see the skill's SKILL.md); the
-daily run may link a story to an existing mover when the story is clearly about it.
+The public list sorts by **Trending** (most stories in the last 14 days) or **Newest**, and
+`/sv/movers/updates` shows movers added and new stories about them.
+
+**The founders' desk.** Behind the unlock, the same pages become a decision desk:
+
+- a **queue** of proposed movers (`status = 'proposed'`): a run or a founder proposes (`ingest.py movers`
+  without `status`), a founder publishes or passes from the desk; until then it is on no public page;
+- the founders' take, an **office-hours score** (rubric k:878, eight lines, 100 points, for one named market),
+  **votes** with reasons (one per founder, recorded under the name chosen at unlock), and a **stage** (new,
+  researching, building, passed);
+- sorting by fit, votes, trending or newest, and filters by kind, stage and status;
+- on each mover, **next steps** to copy into Claude Code: an REA reverse-engineering prompt (for skills: take
+  the source apart), a build brief, and a scoring prompt whose result goes back with `ingest.py notes`;
+- a log of every change (`mover_events`) on `/sv/movers/updates`, with who did what.
+
+Runs read the votes and reasons with `ingest.py feedback` before proposing more, so the founders' calls steer
+what gets found next.
 
 **Public facts, private take.**
 
@@ -84,9 +99,12 @@ daily run may link a story to an existing mover when the story is clearly about 
   it was true), markets, claim status and linked news. These are indexed: `/sv/movers`, `/sv/movers/<id>`
   (`WebPage` + `BreadcrumbList`), the sitemap and one line in llms.txt. Kind filters (`?kind=`) are
   `noindex, follow`. RSS stays news-only.
-- The founders' take (how it helps us, what to learn, where to localize) lives in `mover_notes`, a separate
-  table no public query touches. Only `GET /v1/private/movers` serves it, behind its own token
-  (`SV_PRIVATE_READ_TOKEN_SHA256`; the read token gets 403, and so does a deployment where both are equal).
+- The founders' take (how it helps us, what to learn, where to localize), score and stage live in
+  `mover_notes`, votes in `mover_votes`, and who did what in `mover_events`; no public query touches them.
+  Only `/v1/private/*` serves them and takes the desk's votes, stages and publishing, behind its own token
+  (`SV_FOUNDERS_TOKEN_SHA256`; the read token gets 403, and so does a deployment where both are equal). The
+  public updates endpoint serves only "added" and "new stories" lines, without who or why, and only for
+  movers on the list.
 - The site asks for it only on a request with a valid `sv_founders` cookie, with `cache: 'no-store'` (never in
   Next's data cache). Pages that check the cookie render per request with `Cache-Control: private, no-cache,
   no-store`, so neither Vercel nor induscore.site's proxy can hand one founder's page to anyone else. It never
@@ -95,7 +113,8 @@ daily run may link a story to an existing mover when the story is clearly about 
 
 **Unlocking.** Founders bookmark `https://induscore.site/sv/movers/unlock` (`noindex`, linked from nowhere).
 The passphrase's sha256 is compared with `SV_FOUNDERS_PASSPHRASE_SHA256` in constant time, with a one-second
-delay on a miss. A match sets `sv_founders = <exp>.<hmacSHA256(exp, SV_UNLOCK_SECRET)>`: httpOnly, Secure,
+delay on a miss. The form also asks who is unlocking. A match sets
+`sv_founders = <exp>.<founder>.<hmacSHA256("<exp>.<founder>", SV_UNLOCK_SECRET)>`: httpOnly, Secure,
 `SameSite=Strict`, `Path=/sv`, 30 days. "Lock" on the founders bar clears it. Because of `SameSite=Strict`, a
 link to /sv/movers clicked on another site opens the public view; reload, or use the bookmark.
 
@@ -110,11 +129,11 @@ outlive the archive until any successful ingest POST clears the cache.
 | Vercel `induscore-sv` (prod + preview) | `SV_READ_TOKEN` | read token; its sha256 is `SV_READ_TOKEN_SHA256` on the VM |
 | Vercel | `SV_ANNOUNCE_SECRET`, `SV_NTFY_TOPIC` | verify the signed tunnel URL; same values as the VM |
 | Vercel (optional) | `SV_API_URL` | fallback API URL when no announcement is found |
-| Vercel (production only) | `SV_PRIVATE_READ_TOKEN` | private read token for the founders' take on movers; its sha256 is `SV_PRIVATE_READ_TOKEN_SHA256` on the VM; never the same as `SV_READ_TOKEN` |
+| Vercel (production only) | `SV_FOUNDERS_TOKEN` | the founders' desk token (reads the take, scores and votes; records votes, stages and publishing); its sha256 is `SV_FOUNDERS_TOKEN_SHA256` on the VM; never the same as `SV_READ_TOKEN` |
 | Vercel (production only) | `SV_FOUNDERS_PASSPHRASE_SHA256` | sha256 (hex) of the founders' passphrase; the passphrase itself is stored nowhere |
 | Vercel (production only) | `SV_UNLOCK_SECRET` | HMAC key for the `sv_founders` cookie, at least 32 characters |
 | VM `~/.config/keeping-up-sv/env` (600) | `SV_DATABASE_URL`, `SV_TEST_DATABASE_URL`, `SV_PORT`, `SV_READ_TOKEN_SHA256`, `SV_ANNOUNCE_SECRET`, `SV_NTFY_TOPIC` | written by `ops/vm-setup.sh` |
-| VM env file | `SV_PRIVATE_READ_TOKEN_SHA256` | added empty by `ops/vm-setup.sh`; while empty, the private route answers 403 and founders see "Couldn't load our take" |
+| VM env file | `SV_FOUNDERS_TOKEN_SHA256` | added empty by `ops/vm-setup.sh`; while empty, `/v1/private/*` answers 403 and founders see the public list with a notice |
 | Each laptop `~/.config/keeping-up-sv/ingest.env` (600) | `SV_INGEST_TOKEN` (+ optional `SV_BASE_URL`) | personal ingest token |
 
 Rotating the read token: generate one locally, `vercel env add SV_READ_TOKEN production` from stdin, put its
@@ -124,10 +143,10 @@ Issuing or rotating the founders' view secrets (from `sv/web`, linked to `indusc
 written to shell history). Leave them off preview deployments: without them a page never unlocks.
 
 ```bash
-# private read token: Vercel gets the token, the VM gets its sha256
-T=$(python3 -c 'import secrets; print("svp_" + secrets.token_urlsafe(32))')
-printf %s "$T" | vercel env add SV_PRIVATE_READ_TOKEN production
-printf %s "$T" | shasum -a 256 | cut -d' ' -f1    # -> SV_PRIVATE_READ_TOKEN_SHA256= in the VM env file
+# founders' desk token: Vercel gets the token, the VM gets its sha256
+T=$(python3 -c 'import secrets; print("svf_" + secrets.token_urlsafe(32))')
+printf %s "$T" | vercel env add SV_FOUNDERS_TOKEN production
+printf %s "$T" | shasum -a 256 | cut -d' ' -f1    # -> SV_FOUNDERS_TOKEN_SHA256= in the VM env file
 unset T
 # passphrase: pick a long one (five or more random words); only its sha256 leaves your terminal
 read -rs P && printf %s "$P" | shasum -a 256 | cut -d' ' -f1 | tr -d '\n' | vercel env add SV_FOUNDERS_PASSPHRASE_SHA256 production; unset P

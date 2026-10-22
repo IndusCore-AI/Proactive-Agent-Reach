@@ -26,7 +26,7 @@ SV_DATABASE_URL=postgresql://sv_app:$PW@127.0.0.1:5432/induscore_sv
 SV_TEST_DATABASE_URL=postgresql://sv_app:$PW@127.0.0.1:5432/induscore_sv_test
 SV_PORT=8793
 SV_READ_TOKEN_SHA256=
-SV_PRIVATE_READ_TOKEN_SHA256=
+SV_FOUNDERS_TOKEN_SHA256=
 SV_ANNOUNCE_SECRET=$(rand 32)
 SV_NTFY_TOPIC=ksv-$(python3 -c 'import secrets; print(secrets.token_hex(12))')
 EOF
@@ -34,10 +34,10 @@ EOF
 fi
 chmod 600 "$ENV"
 # Keys added after the first setup: present but empty until filled in by hand.
-# An empty SV_PRIVATE_READ_TOKEN_SHA256 keeps /v1/private/movers closed (403).
-if ! grep -q '^SV_PRIVATE_READ_TOKEN_SHA256=' "$ENV"; then
+# An empty SV_FOUNDERS_TOKEN_SHA256 keeps /v1/private/* (the founders' desk) closed (403).
+if ! grep -q '^SV_FOUNDERS_TOKEN_SHA256=' "$ENV"; then
   [ -n "$(tail -c1 "$ENV")" ] && echo >> "$ENV"
-  echo 'SV_PRIVATE_READ_TOKEN_SHA256=' >> "$ENV"
+  echo 'SV_FOUNDERS_TOKEN_SHA256=' >> "$ENV"
 fi
 set -a; . "$ENV"; set +a
 PW="$(python3 -c 'import os, urllib.parse as u; print(u.urlsplit(os.environ["SV_DATABASE_URL"]).password)')"
