@@ -221,7 +221,7 @@ def _public_run(row: dict | None) -> dict | None:
     if not row:
         return None
     return {
-        "id": str(row["id"]), "status": row["status"], "operator": row["operator"],
+        "id": str(row["id"]), "status": row["status"],
         "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
         "sources": [{k: s.get(k) for k in ("source", "ok", "kept", "error")} for s in row["sources"]],
     }
