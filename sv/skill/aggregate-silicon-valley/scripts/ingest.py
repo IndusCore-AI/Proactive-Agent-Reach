@@ -3,6 +3,10 @@
 
   python3 ingest.py --date YYYY-MM-DD --curated curated.json --sources sources.json
   python3 ingest.py --check                     # token + API reachability only
+  python3 ingest.py movers movers.json          # add/update movers (only when a founder asks)
+  python3 ingest.py movers --list               # every mover: id, kind, status, name
+  python3 ingest.py link MOVER_ID STORY_URL...  # point stories already in the feed at a mover
+  python3 ingest.py archive MOVER_ID            # stop watching a mover (hides it from the site)
 
 Talks only to the public site's ingest endpoint (default
 https://induscore.site/sv/api/ingest), which forwards to the VM API with your
@@ -21,6 +25,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -87,7 +92,214 @@ def load_curated(path: Path) -> list[dict]:
     return [{k: v for k, v in it.items() if k in allowed and v is not None} for it in items]
 
 
+# ---------------------------------------------------------------- movers
+
+MOVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,59}$")
+RESERVED_MOVER_IDS = {"unlock", "lock"}
+MOVER_KINDS = {"company", "app", "skill"}
+MOVER_FIELDS = {"id", "name", "kind", "url", "one_liner", "summary", "traction", "markets_live", "claim_status",
+                "tags", "image_url", "image_kind", "status", "notes", "item_urls"}
+TRACTION_FIELDS = {"label", "value", "source_url", "as_of"}
+NOTE_FIELDS = {"take": 1500, "learn": 1000, "localize": 1000}
+MOVER_BATCH = 50
+
+
+def mover_problems(m: object) -> list[str]:
+    """What the server would refuse, caught before anything is sent. The
+    server checks again; this is for a clear message, not for safety."""
+    if not isinstance(m, dict):
+        return ["not an object"]
+    out: list[str] = []
+    unknown = sorted(set(m) - MOVER_FIELDS)
+    if unknown:
+        out.append(f"unknown fields {unknown} (the take goes under notes: take / learn / localize)")
+    for k in ("id", "name", "kind", "url", "one_liner"):
+        if not isinstance(m.get(k), str) or not m[k].strip():
+            out.append(f"missing {k}")
+    mid = m.get("id")
+    if isinstance(mid, str) and (not MOVER_ID.match(mid) or mid in RESERVED_MOVER_IDS):
+        out.append(f"id {mid!r} must be a lowercase slug (a-z, 0-9, -), 2-60 characters, not unlock/lock")
+    if m.get("kind") is not None and m.get("kind") not in MOVER_KINDS:
+        out.append(f"kind must be one of {sorted(MOVER_KINDS)}")
+    if isinstance(m.get("one_liner"), str) and len(m["one_liner"]) > 200:
+        out.append("one_liner is over 200 characters")
+    if isinstance(m.get("summary"), str) and len(m["summary"]) > 800:
+        out.append("summary is over 800 characters")
+    if m.get("claim_status", "reported") not in ("confirmed", "reported", "unverified"):
+        out.append("claim_status must be confirmed, reported or unverified")
+    traction = m.get("traction") or []
+    if not isinstance(traction, list) or len(traction) > 8:
+        out.append("traction must be a list of at most 8 lines")
+        traction = []
+    for i, t in enumerate(traction):
+        if not isinstance(t, dict):
+            out.append(f"traction[{i}] is not an object")
+            continue
+        if set(t) - TRACTION_FIELDS:
+            out.append(f"traction[{i}] has unknown fields {sorted(set(t) - TRACTION_FIELDS)}")
+        if not str(t.get("source_url") or "").startswith("https://"):
+            out.append(f"traction[{i}] needs a source_url (https): no source, no line")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(t.get("as_of") or "")):
+            out.append(f"traction[{i}] needs as_of as YYYY-MM-DD")
+        for k in ("label", "value"):
+            if not str(t.get(k) or "").strip() or len(str(t.get(k))) > 120:
+                out.append(f"traction[{i}].{k} must be 1-120 characters")
+    markets = m.get("markets_live") or []
+    if not isinstance(markets, list) or len(markets) > 8:
+        out.append("markets_live must be a list of at most 8")
+    notes = m.get("notes")
+    if notes is not None:
+        if not isinstance(notes, dict):
+            out.append("notes must be an object with take / learn / localize")
+        else:
+            if set(notes) - set(NOTE_FIELDS):
+                out.append(f"notes has unknown fields {sorted(set(notes) - set(NOTE_FIELDS))}")
+            for k, cap in NOTE_FIELDS.items():
+                if isinstance(notes.get(k), str) and len(notes[k]) > cap:
+                    out.append(f"notes.{k} is over {cap} characters")
+    urls = m.get("item_urls") or []
+    if not isinstance(urls, list) or len(urls) > 50:
+        out.append("item_urls must be a list of at most 50 story URLs")
+    return out
+
+
+def load_movers(path: Path) -> list[dict]:
+    doc = json.loads(path.read_text())
+    movers = doc.get("movers") if isinstance(doc, dict) else doc
+    if not isinstance(movers, list) or not movers:
+        sys.exit('movers file must be {"movers": [...]} with at least one mover')
+    problems = [f"mover {i} ({m.get('id') if isinstance(m, dict) else '?'}): {p}"
+                for i, m in enumerate(movers) for p in mover_problems(m)]
+    ids = [m.get("id") for m in movers if isinstance(m, dict)]
+    problems += [f"id {i!r} appears more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
+    if problems:
+        sys.exit("movers file has problems:\n  " + "\n  ".join(problems[:30]))
+    return movers
+
+
+def note_texts(movers: list[dict]) -> list[str]:
+    """Every private note string in the file, for the leak check."""
+    return [v for m in movers for v in (m.get("notes") or {}).values() if isinstance(v, str) and v.strip()]
+
+
+def leaked(page: str, secrets_: list[str]) -> list[str]:
+    """The note strings (or a 40-character run of one) that appear in a public page."""
+    text = " ".join(html.unescape(page).split())
+    hits = []
+    for s in secrets_:
+        flat = " ".join(s.split())
+        probes = [flat] if len(flat) <= 40 else [flat[i:i + 40] for i in range(0, len(flat) - 39, 20)]
+        if any(p in text for p in probes):
+            hits.append(flat[:60])
+    return hits
+
+
+def connection() -> tuple[str, str]:
+    base = (setting("SV_BASE_URL", "https://induscore.site/sv") or "").rstrip("/")
+    token = setting("SV_INGEST_TOKEN")
+    if not token:
+        sys.exit(f"No ingest token. Set SV_INGEST_TOKEN or put SV_INGEST_TOKEN=... in {CONFIG} (see the skill's SKILL.md, 'One-time setup').")
+    return base, token
+
+
+def cmd_movers(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py movers", description="Add or update movers from a JSON file.")
+    ap.add_argument("file", nargs="?", type=Path)
+    ap.add_argument("--list", action="store_true", help="print every mover (id, kind, status, name) and exit")
+    args = ap.parse_args(argv)
+    base, token = connection()
+    if args.list:
+        status, res = call("GET", f"{base}/api/ingest/movers", token)
+        if status != 200:
+            sys.exit(f"could not list movers: HTTP {status} {res}")
+        for m in res["movers"]:
+            print(f"{m['id']}\t{m['kind']}\t{m['status']}\t{m['name']}\t{m['url']}")
+        print(f"{len(res['movers'])} movers")
+        return
+    if not args.file:
+        ap.error("give a movers JSON file, or --list")
+    movers = load_movers(args.file)
+    results: list[dict] = []
+    errors: list[str] = []
+    for i in range(0, len(movers), MOVER_BATCH):
+        status, res = call("POST", f"{base}/api/ingest/movers", token, {"movers": movers[i:i + MOVER_BATCH]})
+        if status != 200:
+            errors.append(f"batch {i // MOVER_BATCH + 1}: HTTP {status} {str(res)[:300]}")
+            continue
+        results += res["results"]
+    rejected = [r for r in results if r["outcome"] == "rejected"]
+
+    # verify 1: the database lists every mover this file sent
+    status, listing = call("GET", f"{base}/api/ingest/movers", token)
+    stored = {m["id"]: m for m in listing.get("movers", [])} if status == 200 else {}
+    sent = [m["id"] for m in movers]
+    missing_db = [i for i in sent if i not in stored]
+
+    # verify 2: each watched mover's public page shows its name and none of the notes
+    secrets_ = note_texts(movers)
+    page_problems: list[str] = []
+    for m in movers:
+        if m["id"] in missing_db or stored.get(m["id"], {}).get("status") != "watching":
+            continue
+        st, page = call("GET", f"{base}/movers/{m['id']}?v={int(time.time())}")
+        if st != 200 or not isinstance(page, str):
+            page_problems.append(f"{m['id']}: public page answered HTTP {st}")
+            continue
+        if html.escape(m["name"], quote=False) not in page and m["name"] not in html.unescape(page):
+            page_problems.append(f"{m['id']}: public page does not show the name yet")
+        if hits := leaked(page, secrets_):
+            page_problems.append(f"{m['id']}: PUBLIC PAGE SHOWS PRIVATE NOTES: {hits}")
+    report = {
+        "sent": len(movers), "inserted": sum(r["outcome"] == "inserted" for r in results),
+        "updated": sum(r["outcome"] == "updated" for r in results), "rejected": rejected,
+        "links": {r["id"]: {"linked": r.get("linked", 0), "missing": r.get("missing", [])} for r in results if r["outcome"] != "rejected"},
+        "errors": errors, "db_verified": not missing_db and status == 200, "missing_in_db": missing_db,
+        "pages_verified": not page_problems, "page_problems": page_problems,
+        "pages": [f"{base}/movers/{i}" for i in sent if i not in missing_db],
+    }
+    print(json.dumps(report, indent=1, ensure_ascii=False))
+    sys.exit(0 if report["db_verified"] and not rejected and not errors and not page_problems else 2)
+
+
+def cmd_link(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py link", description="Point stories already in the feed at a mover.")
+    ap.add_argument("mover_id")
+    ap.add_argument("story_urls", nargs="+")
+    args = ap.parse_args(argv)
+    if not MOVER_ID.match(args.mover_id):
+        ap.error("mover_id must be a mover's id (see: ingest.py movers --list)")
+    base, token = connection()
+    linked, missing = 0, []
+    for i in range(0, len(args.story_urls), MOVER_BATCH):
+        status, res = call("POST", f"{base}/api/ingest/movers/{args.mover_id}/link", token,
+                           {"item_urls": args.story_urls[i:i + MOVER_BATCH]})
+        if status != 200:
+            sys.exit(f"could not link: HTTP {status} {res}")
+        linked += res["linked"]
+        missing += res["missing"]
+    print(json.dumps({"id": args.mover_id, "linked": linked, "missing": missing}, indent=1))
+    sys.exit(0 if not missing else 2)
+
+
+def cmd_archive(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py archive", description="Stop watching a mover.")
+    ap.add_argument("mover_id")
+    args = ap.parse_args(argv)
+    if not MOVER_ID.match(args.mover_id):
+        ap.error("mover_id must be a mover's id (see: ingest.py movers --list)")
+    base, token = connection()
+    status, res = call("POST", f"{base}/api/ingest/movers/{args.mover_id}/archive", token, {})
+    print(json.dumps(res, indent=1) if status == 200 else f"could not archive: HTTP {status} {res}")
+    sys.exit(0 if status == 200 else 1)
+
+
+SUBCOMMANDS = {"movers": cmd_movers, "link": cmd_link, "archive": cmd_archive}
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in SUBCOMMANDS:
+        SUBCOMMANDS[sys.argv[1]](sys.argv[2:])
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date")
     ap.add_argument("--curated", type=Path)
@@ -96,10 +308,7 @@ def main() -> None:
     ap.add_argument("--check", action="store_true", help="verify token and connectivity, write nothing")
     args = ap.parse_args()
 
-    base = (setting("SV_BASE_URL", "https://induscore.site/sv") or "").rstrip("/")
-    token = setting("SV_INGEST_TOKEN")
-    if not token:
-        sys.exit(f"No ingest token. Set SV_INGEST_TOKEN or put SV_INGEST_TOKEN=... in {CONFIG} (see the skill's SKILL.md, 'One-time setup').")
+    base, token = connection()
 
     if args.check:
         status, health = call("GET", f"{base}/api/health")
