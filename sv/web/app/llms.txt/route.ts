@@ -1,7 +1,10 @@
 import { getDates } from '@/lib/api';
 import { SITE_NAME, TAGLINE, abs, longDate } from '@/lib/format';
 
-export const revalidate = 3600;
+// Rendered per request from the data cache (5 min, cleared on ingest), so a
+// build never depends on the VM being reachable.
+export const dynamic = 'force-dynamic';
+
 
 export async function GET() {
   const { dates } = await getDates();

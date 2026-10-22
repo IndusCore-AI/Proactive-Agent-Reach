@@ -3,6 +3,10 @@ import type { MetadataRoute } from 'next';
 import { getDates, getSitemapData, getTopics } from '@/lib/api';
 import { abs, storyPath } from '@/lib/format';
 
+// Rendered per request from the data cache (5 min, cleared on ingest), so a
+// build never depends on the VM being reachable.
+export const dynamic = 'force-dynamic';
+
 // Served at induscore.site/sv/sitemap.xml and listed in the apex robots.txt.
 // Only pages with their own content: editions that carried stories, stories
 // that made an edition, topics with enough stories to be indexable.

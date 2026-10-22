@@ -19,8 +19,10 @@ git fetch -q origin "$BRANCH"
 git checkout -q -B "$BRANCH" "origin/$BRANCH"
 bash sv/ops/vm-setup.sh
 tmux kill-window -t keeping-up-sv:api 2>/dev/null || true
+pkill -f "uvicorn app:app --host 127.0.0.1 --port $(grep ^SV_PORT= ~/.config/keeping-up-sv/env | cut -d= -f2) " 2>/dev/null || true
+sleep 2
 bash sv/ops/start.sh
-sleep 4
+sleep 5
 curl -fsS "http://127.0.0.1:$(grep ^SV_PORT= ~/.config/keeping-up-sv/env | cut -d= -f2)/v1/health" && echo
 echo "deployed $(git rev-parse --short HEAD) on $BRANCH; tunnel: $(cat ~/.local/state/keeping-up-sv/tunnel_url 2>/dev/null || echo 'starting')"
 REMOTE

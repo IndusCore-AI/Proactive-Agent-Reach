@@ -5,6 +5,10 @@ import { Bar } from '@/components/Chrome';
 import { getTopics } from '@/lib/api';
 import { SITE_NAME, abs, tagLabel } from '@/lib/format';
 
+// Rendered per request from the data cache (5 min, cleared on ingest), so a
+// build never depends on the VM being reachable.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Topics',
   description: `Startup stories by topic on ${SITE_NAME}: AI, developer tools, infrastructure, fintech, robotics, funding and more.`,

@@ -45,7 +45,9 @@ async function discover(): Promise<string | null> {
       }
     }
     return best?.url ?? null;
-  } catch {
+  } catch (err) {
+    // Next.js signals "render this at request time" by throwing; let it through.
+    if (err && typeof err === 'object' && 'digest' in err) throw err;
     return null;
   }
 }

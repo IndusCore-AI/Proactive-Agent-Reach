@@ -2,7 +2,10 @@ import { getFeed } from '@/lib/api';
 import { CATEGORY_LABEL, SITE_NAME, TAGLINE, abs, storyPath } from '@/lib/format';
 import { esc } from '@/lib/xml';
 
-export const revalidate = 300;
+// Rendered per request from the data cache (5 min, cleared on ingest), so a
+// build never depends on the VM being reachable.
+export const dynamic = 'force-dynamic';
+
 
 // The latest edition as RSS 2.0. Each entry links to the original source and
 // carries our story page as its guid.

@@ -6,6 +6,10 @@ import { DatePicker } from '@/components/Edition';
 import { getDates } from '@/lib/api';
 import { SITE_NAME, abs } from '@/lib/format';
 
+// Rendered per request from the data cache (5 min, cleared on ingest), so a
+// build never depends on the VM being reachable.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Archive of daily editions',
   description: `Every daily edition of ${SITE_NAME}: startup funding, launches, founder discussions and VC news, by date.`,

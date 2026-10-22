@@ -15,7 +15,7 @@ const SOURCES: [string, string, string][] = [
   ['Y Combinator Launches', 'Company launches posted on ycombinator.com/launches', 'Batch, company and launch votes'],
   ['Product Hunt', 'The public launch feed', 'Product pages are linked, not embedded'],
   ['Startup and technology press', 'TechCrunch (startups, venture, AI), Crunchbase News, Techmeme, GeekWire, SiliconANGLE, The Verge, StrictlyVC and others, through their RSS feeds', 'Headline, date and the feed’s own short description'],
-  ['Investors and operators', 'Sequoia, a16z, Lenny’s Newsletter, Not Boring, SaaStr, Tomasz Tunguz, Stratechery, Latent Space, SemiAnalysis', 'Theses and analysis are labelled Analysis or Opinion'],
+  ['Investors and operators', 'Sequoia, a16z, Lenny’s Newsletter, Not Boring, Tomasz Tunguz, Latent Space', 'Theses and analysis are labelled Analysis or Opinion. Some newsletters (Stratechery, SemiAnalysis, SaaStr) refuse automated readers, so we leave them out'],
   ['Company and lab announcements', 'OpenAI, Google AI, Hugging Face and GitHub blogs', 'Labelled Confirmed when the company is announcing its own news'],
   ['Reddit', 'r/startups, r/SaaS, r/Entrepreneur, r/ycombinator, r/venturecapital through public RSS', 'Best effort: Reddit rate-limits anonymous access, and a failed check is shown on the edition'],
   ['X (Twitter)', 'Founder and investor posts that other sources link to', 'X offers no open read access, so posts are embedded with X’s own widget only when found through another source'],
