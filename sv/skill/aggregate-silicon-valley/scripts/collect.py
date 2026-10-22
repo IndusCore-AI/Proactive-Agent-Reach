@@ -24,6 +24,7 @@ import re
 import ssl
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -563,16 +564,114 @@ def collect_youtube(src: dict, start: datetime, end: datetime) -> tuple[list[dic
     return out, len(entries)
 
 
+REDDIT_UA = "KeepingUpSV/1.1 (once-a-day startup digest; +https://induscore.site/sv/about)"
+
+
+class RedditFetcher:
+    """The one way a run reads Reddit, shared by every Reddit source.
+
+    Reddit lets anonymous readers make very few requests (in October 2026 its
+    headers allowed one a minute), so this reader is deliberately slow and
+    gives up early:
+      - a descriptive User-Agent and one request at a time;
+      - it waits as long as Reddit's X-Ratelimit-Reset header asks before the
+        next request (at most MAX_WAIT seconds), and MIN_GAP seconds otherwise;
+      - on a 429 it waits Retry-After (or the reset) and retries once; a second
+        429 fails that source and every later Reddit source in the run fails at
+        once with "not tried", so nothing loops. The edition shows each failure.
+    No login, no API keys, no alternate hosts."""
+
+    MIN_GAP = 2.0
+    MAX_WAIT = 70.0
+
+    def __init__(self, opener=None, sleep=time.sleep, clock=time.monotonic) -> None:
+        self._open = opener or self._urlopen
+        self._sleep, self._clock = sleep, clock
+        self._lock = threading.Lock()
+        self._next_ok = 0.0
+        self.blocked: str | None = None
+
+    @staticmethod
+    def _urlopen(url: str) -> tuple[int, dict, bytes]:
+        req = urllib.request.Request(url, headers={"User-Agent": REDDIT_UA, "Accept": "application/atom+xml, */*"})
+        try:
+            with urllib.request.urlopen(req, timeout=25, context=SSL_CONTEXT) as resp:
+                return resp.status, dict(resp.headers), resp.read(4_000_000)
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers or {}), b""
+
+    @staticmethod
+    def _header(headers: dict, name: str) -> str:
+        for k, v in headers.items():
+            if k.lower() == name:
+                return str(v).strip()
+        return ""
+
+    def _pace(self, headers: dict) -> float:
+        """Seconds to wait before the next request, from Reddit's own headers."""
+        try:
+            remaining = float(self._header(headers, "x-ratelimit-remaining") or "1")
+            reset = float(self._header(headers, "x-ratelimit-reset") or "0")
+        except ValueError:
+            return self.MIN_GAP
+        return min(reset + 1, self.MAX_WAIT) if remaining < 1 else self.MIN_GAP
+
+    def get(self, url: str) -> bytes:
+        with self._lock:
+            if self.blocked:
+                raise SourceError(f"not tried: {self.blocked}")
+            for attempt in (1, 2):
+                wait = self._next_ok - self._clock()
+                if wait > 0:
+                    self._sleep(wait)
+                try:
+                    status, headers, body = self._open(url)
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    self._next_ok = self._clock() + self.MIN_GAP * 2
+                    if attempt == 2:
+                        raise SourceError(f"{type(e).__name__}: {getattr(e, 'reason', e)} for www.reddit.com")
+                    continue
+                self._next_ok = self._clock() + self._pace(headers)
+                if status == 200:
+                    return body
+                if status == 429:
+                    if attempt == 2:
+                        self.blocked = "Reddit rate-limited this run (HTTP 429 twice); the next run tries again"
+                        raise SourceError("HTTP 429 from Reddit: rate-limited, waited and retried once")
+                    retry = self._header(headers, "retry-after")
+                    wait = float(retry) if retry.isdigit() else self._pace(headers)
+                    self._next_ok = self._clock() + min(max(wait, self.MIN_GAP), self.MAX_WAIT)
+                    continue
+                if status in (500, 502, 503, 504) and attempt == 1:
+                    continue
+                raise SourceError(f"HTTP {status} from Reddit" + (" (refused; not worked around)" if status in (401, 403) else ""))
+        raise SourceError("Reddit did not answer")  # not reached
+
+
+REDDIT = RedditFetcher()
+
+
+def reddit_url(src: dict) -> str:
+    """The source's feed: its subreddits' top posts of the day as one public RSS
+    feed (one request per source), or an explicit url."""
+    if src.get("subreddits"):
+        subs = "+".join(src["subreddits"])
+        return f"https://www.reddit.com/r/{subs}/top/.rss?t=day&limit={int(src.get('limit', 50))}"
+    return src["url"]
+
+
 def collect_reddit(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
-    entries = parse_feed(fetch(src["url"], tries=2))
+    entries = parse_feed(REDDIT.get(reddit_url(src)))
     out = []
-    for e in entries:
+    for rank, e in enumerate(entries, 1):
         if not e["published"] or not (start <= e["published"] <= end):
             continue
         text = html_to_text(e["html"])
         sub = re.search(r"/r/([A-Za-z0-9_]+)/", e["link"] or "")
         c = candidate(src, url=e["link"], title=e["title"], published=e["published"], text=text,
-                      source_name=f"r/{sub.group(1)}" if sub else "Reddit", category="discussion")
+                      source_name=f"r/{sub.group(1)}" if sub else "Reddit", category="discussion",
+                      engagement={"top_rank": rank, "of": len(entries)},
+                      extra={"subreddit": sub.group(1) if sub else None})
         if c:
             out.append(c)
     return out, len(entries)
@@ -591,6 +690,9 @@ def prescore(c: dict, end: datetime) -> dict:
         engagement = 35 * min(1.0, math.log10(1 + eng["points"] + 0.5 * eng.get("comments", 0)) / math.log10(1 + 900))
     elif "votes" in eng:
         engagement = 35 * min(1.0, math.log10(1 + eng["votes"]) / math.log10(1 + 120))
+    elif "top_rank" in eng:
+        # a Reddit post: its place in the day's top list (RSS carries no scores)
+        engagement = 24 * max(0.0, 1 - (eng["top_rank"] - 1) / max(1, eng.get("of", 1)))
     elif "views" in eng:
         # a video: 250k views inside the 48-hour window is as strong as a 900-point HN story
         engagement = 35 * min(1.0, math.log10(1 + eng["views"]) / math.log10(1 + 250_000))
@@ -668,6 +770,30 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
                 "seconds": round(time.time() - t0, 1), "error": str(e)[:280] or type(e).__name__}, []
 
 
+# Sources that must not run in parallel with each other share a lane: one
+# worker reads them in order (Reddit allows one request at a time).
+LANES = {"reddit": "reddit"}
+
+
+def run_all(sources: list[dict], start: datetime, end: datetime, is_today: bool) -> list[tuple[dict, list[dict]]]:
+    """Every source, in sources.json order. Laned sources run one after another
+    in a single worker (started first, as they are the slowest); the rest run
+    in parallel."""
+    lanes: dict[str, list[dict]] = {}
+    solo: list[list[dict]] = []
+    for s in sources:
+        lane = LANES.get(s["kind"])
+        if lane:
+            lanes.setdefault(lane, []).append(s)
+        else:
+            solo.append([s])
+    groups = list(lanes.values()) + solo
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        done = list(pool.map(lambda group: [run_source(s, start, end, is_today) for s in group], groups))
+    by_id = {r[0]["source"]: r for group in done for r in group}
+    return [by_id[s["id"]] for s in sources]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", help="edition date YYYY-MM-DD (default: today in Pacific time)")
@@ -687,8 +813,9 @@ def main() -> None:
     if args.only:
         wanted = set(args.only.split(","))
         sources = [s for s in sources if s["id"] in wanted]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda s: run_source(s, start, end, day == today), sources))
+    if any(s["kind"] == "reddit" for s in sources):
+        print("Reddit is read one feed at a time, as slowly as its rate-limit headers ask (often a minute apart).")
+    results = run_all(sources, start, end, day == today)
 
     statuses = [r[0] for r in results]
     cands = merge([c for _, cs in results for c in cs])

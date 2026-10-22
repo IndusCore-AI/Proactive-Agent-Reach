@@ -94,3 +94,121 @@ def test_configured_youtube_channels_are_well_formed():
         assert s["channel_id"].startswith("UC") and len(s["channel_id"]) == 24, s["id"]
         assert len(s["id"]) <= 32 and len(s["name"]) <= 60
     assert len({s["channel_id"] for s in channels}) == len(channels)
+
+
+# ---------------------------------------------------------------- Reddit
+
+
+class FakeReddit:
+    """Scripted answers for RedditFetcher, a fake clock and a record of waits."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls: list[str] = []
+        self.now = 1000.0
+        self.waits: list[float] = []
+
+    def open(self, url):
+        self.calls.append(url)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def sleep(self, s):
+        self.waits.append(round(s, 1))
+        self.now += s
+
+    def clock(self):
+        return self.now
+
+    def fetcher(self):
+        return collect.RedditFetcher(opener=self.open, sleep=self.sleep, clock=self.clock)
+
+
+def test_reddit_waits_as_long_as_its_headers_ask():
+    fake = FakeReddit([(200, {"x-ratelimit-remaining": "0.0", "x-ratelimit-reset": "30"}, b"one"),
+                       (200, {"X-Ratelimit-Remaining": "5", "X-Ratelimit-Reset": "50"}, b"two"),
+                       (200, {}, b"three")])
+    r = fake.fetcher()
+    assert r.get("https://www.reddit.com/a") == b"one"
+    assert r.get("https://www.reddit.com/b") == b"two"
+    assert r.get("https://www.reddit.com/c") == b"three"
+    assert fake.waits == [31.0, 2.0]   # the reset plus a second, then the minimum gap
+
+
+def test_reddit_retries_a_429_once_after_retry_after():
+    fake = FakeReddit([(429, {"Retry-After": "12", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "40"}, b""),
+                       (200, {}, b"ok")])
+    assert fake.fetcher().get("https://www.reddit.com/a") == b"ok"
+    assert fake.waits == [12.0] and len(fake.calls) == 2
+
+
+def test_reddit_gives_up_after_two_429s_and_skips_the_rest_of_the_run():
+    fake = FakeReddit([(429, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "500"}, b""),
+                       (429, {}, b"")])
+    r = fake.fetcher()
+    with pytest.raises(collect.SourceError, match="HTTP 429 from Reddit: rate-limited, waited and retried once"):
+        r.get("https://www.reddit.com/a")
+    assert fake.waits == [70.0]          # a long reset is capped, never an endless wait
+    with pytest.raises(collect.SourceError, match="^not tried: Reddit rate-limited this run"):
+        r.get("https://www.reddit.com/b")
+    assert len(fake.calls) == 2          # the second source never reached Reddit
+
+
+def test_reddit_refusals_are_not_retried_or_worked_around():
+    fake = FakeReddit([(403, {}, b""), (404, {}, b""), (200, {}, b"fine")])
+    r = fake.fetcher()
+    with pytest.raises(collect.SourceError, match="HTTP 403 from Reddit \\(refused; not worked around\\)"):
+        r.get("https://www.reddit.com/a")
+    with pytest.raises(collect.SourceError, match="HTTP 404"):
+        r.get("https://www.reddit.com/b")
+    assert r.get("https://www.reddit.com/c") == b"fine" and r.blocked is None
+    assert len(fake.calls) == 3
+
+
+def test_reddit_network_error_is_retried_once():
+    fake = FakeReddit([TimeoutError("slow"), TimeoutError("slow")])
+    with pytest.raises(collect.SourceError, match="TimeoutError"):
+        fake.fetcher().get("https://www.reddit.com/a")
+    assert len(fake.calls) == 2
+
+
+def test_reddit_collector_builds_one_feed_per_group(monkeypatch):
+    fake = FakeReddit([(200, {}, fixture("reddit_top.xml"))])
+    monkeypatch.setattr(collect, "REDDIT", fake.fetcher())
+    src = {"id": "reddit-builders", "name": "Reddit (SaaS, side projects)", "kind": "reddit", "subreddits": ["SaaS", "SideProject"],
+           "limit": 50, "weight": 7, "filter": False, "category": "discussion", "claim": "unverified"}
+    cands, fetched = collect.collect_reddit(src, *WINDOW)
+    assert fake.calls == ["https://www.reddit.com/r/SaaS+SideProject/top/.rss?t=day&limit=50"]
+    assert fetched == 3 and [c["source_name"] for c in cands] == ["r/SaaS", "r/SideProject"]
+    assert cands[1]["url"] == "https://www.reddit.com/r/SideProject/comments/1bbbbbb/i_built_a_free_library"
+    assert cands[0]["claim_status"] == "unverified" and cands[0]["category"] == "discussion"
+    assert cands[0]["extra"] == {"subreddit": "SaaS"} and cands[0]["engagement"] == {"top_rank": 1, "of": 3}
+    first, second = (collect.prescore(c, WINDOW[1]) for c in cands)
+    assert first["score_detail"]["engagement"] == 24.0 and second["score_detail"]["engagement"] == 16.0
+    assert "submitted by" not in cands[0]["excerpt"]
+
+
+def test_reddit_sources_share_one_lane_and_keep_their_order(monkeypatch):
+    order = []
+
+    def fake_run(src, start, end, is_today):
+        order.append(src["id"])
+        return {"source": src["id"], "ok": True}, []
+
+    monkeypatch.setattr(collect, "run_source", fake_run)
+    sources = [{"id": "techcrunch", "kind": "rss"}, {"id": "reddit", "kind": "reddit"}, {"id": "hn", "kind": "hn"},
+               {"id": "reddit-ai", "kind": "reddit"}]
+    results = collect.run_all(sources, *WINDOW, False)
+    assert [r[0]["source"] for r in results] == ["techcrunch", "reddit", "hn", "reddit-ai"]
+    assert order.index("reddit") < order.index("reddit-ai")
+
+
+def test_configured_reddit_groups():
+    groups = configured("reddit")
+    subs = [s for g in groups for s in g["subreddits"]]
+    for wanted in ("SaaS", "startups", "SideProject", "indiehackers", "ClaudeAI", "LocalLLaMA", "Entrepreneur", "StartUpIndia"):
+        assert wanted in subs
+    assert len(subs) == len(set(subs)) and len(groups) <= 4   # few requests: one per group
+    assert all(g["claim"] == "unverified" for g in groups)

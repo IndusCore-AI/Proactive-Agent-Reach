@@ -1,5 +1,5 @@
 {
-  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). enabled:false skips a source (disabled_reason says why).",
+  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). reddit: subreddits are read together as one public RSS feed of the day's top posts (one request per source, paced by Reddit's rate-limit headers; see RedditFetcher in collect.py). enabled:false skips a source (disabled_reason says why).",
   "sources": [
     {
       "id": "hackernews",
@@ -279,9 +279,58 @@
     },
     {
       "id": "reddit",
-      "name": "Reddit",
+      "name": "Reddit (startups, founders)",
       "kind": "reddit",
-      "url": "https://www.reddit.com/r/startups+SaaS+Entrepreneur+ycombinator+venturecapital/top/.rss?t=day&limit=40",
+      "subreddits": [
+        "startups",
+        "Entrepreneur",
+        "indiehackers",
+        "ycombinator",
+        "venturecapital"
+      ],
+      "limit": 40,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-builders",
+      "name": "Reddit (SaaS, side projects)",
+      "kind": "reddit",
+      "subreddits": [
+        "SaaS",
+        "SideProject"
+      ],
+      "limit": 30,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-ai",
+      "name": "Reddit (Claude, local LLMs)",
+      "kind": "reddit",
+      "subreddits": [
+        "ClaudeAI",
+        "LocalLLaMA"
+      ],
+      "limit": 30,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-india",
+      "name": "Reddit (Indian startups)",
+      "kind": "reddit",
+      "subreddits": [
+        "StartUpIndia",
+        "indianstartups"
+      ],
+      "limit": 25,
       "weight": 7,
       "filter": false,
       "category": "discussion",
