@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { CATEGORIES, CATEGORY_LABEL, longDate, shortDate, storyPath, tagLabel, timePT, todayPT, abs, SITE_NAME } from '@/lib/format';
 import type { Category, Feed, Item } from '@/lib/types';
 
-import { JsonLd } from './Chrome';
+import { HomeLink, JsonLd } from './Chrome';
 import { StoryCard } from './StoryCard';
 
 export const PAGE_SIZE = 100;
@@ -115,9 +115,7 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
               {shortDate(feed.next)} →
             </Link>
           ) : !isToday ? (
-            <Link className="btn" href="/">
-              Today →
-            </Link>
+            <HomeLink className="btn">Today →</HomeLink>
           ) : null}
           <DatePicker value={date} />
         </nav>
@@ -190,21 +188,33 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
         <aside className="rail" aria-label="About this edition">
           {run && run.sources.length > 0 && (
             <section className="panel">
-              <h2>Sources checked</h2>
+              <h2>Where these came from</h2>
               <ul>
-                {run.sources.map((s) => (
-                  <li key={s.source}>
-                    {s.ok ? (
+                {run.sources
+                  .filter((s) => (s.kept ?? 0) > 0)
+                  .sort((a, b) => (b.kept ?? 0) - (a.kept ?? 0))
+                  .map((s) => (
+                    <li key={s.source}>
                       <Link href={editionHref(basePath, { source: s.source })} rel="nofollow">
-                        {feed.facets.sources?.[s.source]?.name ?? s.source}
+                        {s.name ?? s.source}
                       </Link>
-                    ) : (
-                      <span>{feed.facets.sources?.[s.source]?.name ?? s.source}</span>
-                    )}
-                    <span className={s.ok ? undefined : 'src-fail'}>{s.ok ? `${feed.facets.sources?.[s.source]?.n ?? 0} kept` : 'unavailable'}</span>
-                  </li>
-                ))}
+                      <span>{s.kept}</span>
+                    </li>
+                  ))}
               </ul>
+              <details className="sources-all">
+                <summary>
+                  {sourcesOk} of {run.sources.length} sources answered
+                </summary>
+                <ul>
+                  {run.sources.map((s) => (
+                    <li key={s.source}>
+                      <span>{s.name ?? s.source}</span>
+                      <span className={s.ok ? undefined : 'src-fail'}>{s.ok ? `${s.kept ?? 0} kept` : 'unavailable'}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             </section>
           )}
           {topTags(items).length > 0 && (

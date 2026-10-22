@@ -46,7 +46,7 @@ export interface RunSummary {
   status: 'complete' | 'partial' | 'failed';
   started_at: string;
   finished_at: string | null;
-  sources: { source: string; ok: boolean; kept: number | null; error: string | null }[];
+  sources: { source: string; name?: string | null; ok: boolean; fetched?: number | null; kept: number | null; error: string | null }[];
 }
 
 export interface Feed {

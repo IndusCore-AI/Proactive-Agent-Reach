@@ -2,6 +2,12 @@ import Link from 'next/link';
 
 import { SITE_NAME } from '@/lib/format';
 
+// The bare /sv is the one path induscore.site cannot proxy for a client-side
+// (RSC) navigation, so links to it are plain anchors: always a full page load.
+export function HomeLink(props: Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, 'href'>) {
+  return <a href="/sv" {...props} />;
+}
+
 const NAV = [
   { href: '/', label: 'Today', key: 'today' },
   { href: '/archive', label: 'Archive', key: 'archive' },
@@ -14,17 +20,23 @@ export function Bar({ current }: { current?: string }) {
   return (
     <header className="bar">
       <div className="wrap bar-inner">
-        <Link href="/" className="wordmark" aria-label={`${SITE_NAME}, today's edition`}>
+        <HomeLink className="wordmark" aria-label={`${SITE_NAME}, today's edition`}>
           <span className="mark" aria-hidden="true">SV</span>
           <span className="long">{SITE_NAME}</span>
           <span className="short">Keeping Up</span>
-        </Link>
+        </HomeLink>
         <nav className="nav" aria-label="Sections">
-          {NAV.map((n) => (
-            <Link key={n.key} href={n.href} aria-current={current === n.key ? 'page' : undefined}>
-              {n.label}
-            </Link>
-          ))}
+          {NAV.map((n) =>
+            n.href === '/' ? (
+              <HomeLink key={n.key} aria-current={current === n.key ? 'page' : undefined}>
+                {n.label}
+              </HomeLink>
+            ) : (
+              <Link key={n.key} href={n.href} aria-current={current === n.key ? 'page' : undefined}>
+                {n.label}
+              </Link>
+            ),
+          )}
         </nav>
       </div>
     </header>
@@ -36,7 +48,7 @@ export function Footer() {
     <footer className="foot">
       <div className="wrap">
         <nav aria-label="Footer">
-          <Link href="/">Today</Link>
+          <HomeLink>Today</HomeLink>
           <Link href="/archive">Archive</Link>
           <Link href="/topics">Topics</Link>
           <Link href="/about">How this feed is made</Link>

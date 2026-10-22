@@ -141,7 +141,7 @@ def main() -> None:
     kept_by_source: dict[str, int] = {}
     for it in items:
         kept_by_source[it["source"]] = kept_by_source.get(it["source"], 0) + 1
-    src_report = [{"source": s["source"], "ok": s["ok"], "fetched": s["fetched"], "kept": kept_by_source.get(s["source"], 0),
+    src_report = [{"source": s["source"], "name": s.get("name"), "ok": s["ok"], "fetched": s["fetched"], "kept": kept_by_source.get(s["source"], 0),
                    "error": s["error"]} for s in statuses]
     persisted = totals["inserted"] + totals["updated"] + totals["merged"]
     if persisted == 0:

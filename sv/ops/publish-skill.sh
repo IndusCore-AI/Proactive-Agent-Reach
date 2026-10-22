@@ -11,15 +11,12 @@ VM="${SV_VM:?set SV_VM to the VM ssh target}"
 SSH=(ssh -o BatchMode=yes)
 [ -n "${SV_VM_KEY:-}" ] && SSH+=(-i "$SV_VM_KEY")
 REV="$(git -C "$SKILL" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-tar -C "$SKILL" --exclude '__pycache__' --exclude '*.pyc' -czf - . | "${SSH[@]}" "$VM" REV="$REV" bash -c '
-  set -euo pipefail
-  DEST=~/teamctx/client/skills/aggregate-silicon-valley
-  rm -rf "$DEST.new" && mkdir -p "$DEST.new" && tar -xzf - -C "$DEST.new"
-  rm -rf "$DEST" && mv "$DEST.new" "$DEST"
-  cd ~/teamctx
-  git add client/skills/aggregate-silicon-valley
-  if git diff --cached --quiet; then echo "teamctx: skill unchanged"; else
-    git -c user.name="keeping-up-sv publish" -c user.email="noreply@induscore.site" commit -qm "Shared skill aggregate-silicon-valley (Proactive-Agent-Reach $REV)"
-    echo "teamctx: published at $(git rev-parse --short HEAD)"
-  fi
-'
+DEST='~/teamctx/client/skills/aggregate-silicon-valley'
+# 1. upload into a fresh directory, then swap it in
+COPYFILE_DISABLE=1 tar -C "$SKILL" --exclude '__pycache__' --exclude '*.pyc' --no-xattrs -czf - . \
+  | "${SSH[@]}" "$VM" "rm -rf $DEST.new && mkdir -p $DEST.new && tar -xzf - -C $DEST.new && rm -rf $DEST && mv $DEST.new $DEST"
+# 2. record it on teamctx's main
+"${SSH[@]}" "$VM" "cd ~/teamctx && git add client/skills/aggregate-silicon-valley && \
+  if git diff --cached --quiet; then echo 'teamctx: skill unchanged'; else \
+  git -c user.name='keeping-up-sv publish' -c user.email='noreply@induscore.site' commit -qm 'Shared skill aggregate-silicon-valley (Proactive-Agent-Reach $REV)' && \
+  echo \"teamctx: published at \$(git rev-parse --short HEAD)\"; fi"

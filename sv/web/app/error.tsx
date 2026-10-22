@@ -12,7 +12,7 @@ export default function Error({ reset }: { reset: () => void }) {
           <button className="btn" type="button" onClick={reset}>
             Try again
           </button>{' '}
-          <Link href="/">Today’s edition</Link>
+          <a href="/sv">Today’s edition</a>
         </p>
       </main>
     </div>

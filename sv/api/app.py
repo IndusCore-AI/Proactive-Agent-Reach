@@ -171,6 +171,7 @@ class ItemsIn(BaseModel):
 
 class SourceStatus(BaseModel):
     source: Slug
+    name: str | None = Field(default=None, max_length=60)
     ok: bool
     fetched: int = Field(default=0, ge=0)
     kept: int = Field(default=0, ge=0)
@@ -223,7 +224,7 @@ def _public_run(row: dict | None) -> dict | None:
     return {
         "id": str(row["id"]), "status": row["status"],
         "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
-        "sources": [{k: s.get(k) for k in ("source", "ok", "kept", "error")} for s in row["sources"]],
+        "sources": [{k: s.get(k) for k in ("source", "name", "ok", "fetched", "kept", "error")} for s in row["sources"]],
     }
 
 

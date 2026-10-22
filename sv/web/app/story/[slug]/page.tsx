@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound, permanentRedirect } from 'next/navigation';
 
-import { Bar, JsonLd } from '@/components/Chrome';
+import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { XEmbed, YouTubeEmbed } from '@/components/Embeds';
 import { StoryCard } from '@/components/StoryCard';
 import { ApiError, getItem } from '@/lib/api';
@@ -101,7 +101,7 @@ export default async function StoryPage({ params }: { params: Params }) {
       <div className="wrap">
         <ol className="crumbs">
           <li>
-            <Link href="/">Today</Link>
+            <HomeLink>Today</HomeLink>
           </li>
           {item.feed_date && (
             <li>
@@ -145,7 +145,7 @@ export default async function StoryPage({ params }: { params: Params }) {
             </a>
             {mentions.slice(0, 4).map((m) => (
               <a className="btn" key={m.url} href={m.url} rel="noopener" target="_blank">
-                {m.label}
+                {m.label} ↗
                 {m.points != null ? ` · ${compactNumber(m.points)} pts` : ''}
                 {m.comments != null ? ` · ${compactNumber(m.comments)} comments` : ''}
               </a>

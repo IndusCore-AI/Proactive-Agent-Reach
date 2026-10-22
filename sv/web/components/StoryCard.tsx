@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-import { CATEGORY_LABEL, CLAIM_LABEL, compactNumber, fundingLine, hostOf, storyPath, tagLabel, timePT } from '@/lib/format';
+import { CATEGORY_LABEL, CLAIM_LABEL, compactNumber, fundingLine, hostOf, shortDate, storyPath, tagLabel, timePT } from '@/lib/format';
 import type { Item } from '@/lib/types';
 
 import { XEmbed, YouTubeEmbed } from './Embeds';
@@ -38,7 +38,7 @@ export function StoryCard({ item, headingLevel = 3, showEdition = false }: { ite
         <time dateTime={when} title={item.published_at ? 'Published' : 'First seen (the source gives no date)'}>
           {item.published_at ? timePT(when) : `Seen ${timePT(when)}`}
         </time>
-        {showEdition && item.feed_date && <Link href={`/${item.feed_date}`}>Edition of {item.feed_date}</Link>}
+        {showEdition && item.feed_date && <Link href={`/${item.feed_date}`}>Edition of {shortDate(item.feed_date)}</Link>}
       </p>
       {item.summary && (
         <p className="context">
@@ -62,13 +62,13 @@ export function StoryCard({ item, headingLevel = 3, showEdition = false }: { ite
       <ul className="links">
         <li>
           <a href={item.url} rel="noopener" target="_blank">
-            Read at {hostOf(item.url) || publisher}
+            Read at {hostOf(item.url) || publisher} ↗
           </a>
         </li>
         {via.slice(0, 3).map((m) => (
           <li key={m.url}>
             <a href={m.url} rel="noopener" target="_blank">
-              {m.label}
+              {m.label} ↗
             </a>
             <Engagement points={m.points} comments={m.comments} />
           </li>

@@ -115,6 +115,8 @@ img, svg { display: block; max-width: 100%; }
 }
 .wordmark .long { display: none; }
 @media (min-width: 560px) { .wordmark .long { display: inline; } .wordmark .short { display: none; } }
+/* Phone width: the mark alone, so all five sections fit without sideways scroll. */
+@media (max-width: 479px) { .wordmark .short { display: none; } }
 .nav { margin-left: auto; display: flex; gap: 2px; }
 .nav a {
   text-decoration: none; font-size: 0.875rem; color: var(--ink-2);
@@ -123,7 +125,8 @@ img, svg { display: block; max-width: 100%; }
 .nav a:hover { background: var(--sunk); color: var(--ink); }
 .nav a[aria-current="page"] { color: var(--ink); font-weight: 600; background: var(--sunk); }
 .nav a:active, .chip:active, .btn:active, .pager a:active { transform: scale(0.97); }
-@media (max-width: 420px) { .nav a { padding: 7px 7px; font-size: 0.8125rem; } }
+@media (max-width: 420px) { .nav a { padding: 7px 6px; font-size: 0.8125rem; } }
+@media (max-width: 560px) { .section-head span { display: none; } }
 
 @media (prefers-reduced-transparency: reduce) {
   .bar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
@@ -190,6 +193,9 @@ img, svg { display: block; max-width: 100%; }
 .panel li { display: flex; justify-content: space-between; gap: 10px; }
 .panel li span:last-child { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .src-fail { color: var(--c-news); }
+.sources-all { margin-top: 12px; font-size: 0.8125rem; color: var(--ink-3); }
+.sources-all summary { cursor: pointer; }
+.sources-all ul { margin-top: 8px; }
 
 /* ---------- filters ---------- */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; padding: 0; list-style: none; }
@@ -209,7 +215,7 @@ img, svg { display: block; max-width: 100%; }
 .section-head h2 { font-size: 1.0625rem; letter-spacing: -0.01em; font-weight: 700; margin: 0; }
 .section-head span { color: var(--ink-3); font-size: 0.8125rem; }
 .stories { list-style: none; margin: 0; padding: 0; }
-.story { padding: 18px 0; border-bottom: 1px solid var(--line); display: grid; gap: 7px; }
+.story { padding: 18px 0; border-bottom: 1px solid var(--line); display: grid; gap: 7px; align-content: start; }
 .story:last-child { border-bottom: 0; }
 .lead { display: grid; gap: 0; }
 @media (min-width: 760px) {

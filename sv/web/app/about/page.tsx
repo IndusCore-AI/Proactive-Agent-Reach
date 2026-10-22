@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { Bar, JsonLd } from '@/components/Chrome';
+import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { SITE_NAME, abs } from '@/lib/format';
 
 export const metadata: Metadata = {
@@ -109,7 +109,7 @@ export default function About() {
           </p>
           <h2>Follow along</h2>
           <p>
-            <Link href="/">Today&apos;s edition</Link> · <Link href="/archive">every past edition</Link> ·{' '}
+            <HomeLink>Today&apos;s edition</HomeLink> · <Link href="/archive">every past edition</Link> ·{' '}
             <a href="/sv/feed.xml">RSS feed</a> · <a href="/sv/llms.txt">llms.txt</a>
           </p>
           <p>

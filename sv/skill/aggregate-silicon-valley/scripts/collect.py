@@ -415,7 +415,8 @@ def collect_hn(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
             tags.append("yc")
         c = candidate(
             src, url=thread if is_text else h["url"], title=title, published=published,
-            text=html_to_text(h.get("story_text") or ""), author=h.get("author") or "",
+            # h["author"] is whoever submitted it to HN, not the author of the linked work.
+            text=html_to_text(h.get("story_text") or ""),
             source_name="Hacker News" if is_text else pretty_publisher(h["url"]),
             mentions=[] if is_text else [mention], engagement={"points": points, "comments": comments},
             tags=tags, category=category,
