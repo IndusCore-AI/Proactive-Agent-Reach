@@ -1,0 +1,291 @@
+{
+  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit. enabled:false skips a source (disabled_reason says why).",
+  "sources": [
+    {
+      "id": "hackernews",
+      "name": "Hacker News",
+      "kind": "hn",
+      "weight": 16,
+      "filter": true,
+      "category": "discussion",
+      "claim": "reported"
+    },
+    {
+      "id": "yc-launches",
+      "name": "YC Launches",
+      "kind": "yc",
+      "url": "https://www.ycombinator.com/launches",
+      "weight": 15,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed",
+      "tags": [
+        "yc"
+      ]
+    },
+    {
+      "id": "producthunt",
+      "name": "Product Hunt",
+      "kind": "rss",
+      "url": "https://www.producthunt.com/feed",
+      "weight": 9,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed"
+    },
+    {
+      "id": "techcrunch",
+      "name": "TechCrunch",
+      "kind": "rss",
+      "urls": [
+        "https://techcrunch.com/category/startups/feed/",
+        "https://techcrunch.com/category/venture/feed/",
+        "https://techcrunch.com/category/artificial-intelligence/feed/"
+      ],
+      "weight": 17,
+      "filter": false,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "crunchbase-news",
+      "name": "Crunchbase News",
+      "kind": "rss",
+      "url": "https://news.crunchbase.com/feed/",
+      "weight": 16,
+      "filter": false,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "techmeme",
+      "name": "Techmeme",
+      "kind": "rss",
+      "url": "https://www.techmeme.com/feed.xml",
+      "weight": 16,
+      "filter": true,
+      "category": "news",
+      "claim": "reported",
+      "original_in_description": true
+    },
+    {
+      "id": "strictlyvc",
+      "name": "StrictlyVC",
+      "kind": "rss",
+      "url": "https://strictlyvc.com/feed/",
+      "weight": 13,
+      "filter": false,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "geekwire",
+      "name": "GeekWire",
+      "kind": "rss",
+      "url": "https://www.geekwire.com/feed/",
+      "weight": 11,
+      "filter": true,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "siliconangle",
+      "name": "SiliconANGLE",
+      "kind": "rss",
+      "url": "https://siliconangle.com/feed/",
+      "weight": 11,
+      "filter": true,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "theverge",
+      "name": "The Verge",
+      "kind": "rss",
+      "url": "https://www.theverge.com/rss/index.xml",
+      "weight": 10,
+      "filter": true,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "wired",
+      "name": "Wired",
+      "kind": "rss",
+      "url": "https://www.wired.com/feed/category/business/latest/rss",
+      "weight": 9,
+      "filter": true,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "thenextweb",
+      "name": "The Next Web",
+      "kind": "rss",
+      "url": "https://thenextweb.com/feed",
+      "weight": 8,
+      "filter": true,
+      "category": "news",
+      "claim": "reported"
+    },
+    {
+      "id": "sequoia",
+      "name": "Sequoia Capital",
+      "kind": "rss",
+      "url": "https://www.sequoiacap.com/feed/",
+      "weight": 14,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "a16z",
+      "name": "a16z",
+      "kind": "rss",
+      "url": "https://a16z.substack.com/feed",
+      "weight": 14,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "lennys-newsletter",
+      "name": "Lenny's Newsletter",
+      "kind": "rss",
+      "url": "https://www.lennysnewsletter.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "not-boring",
+      "name": "Not Boring",
+      "kind": "rss",
+      "url": "https://www.notboring.co/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "saastr",
+      "name": "SaaStr",
+      "kind": "rss",
+      "url": "https://www.saastr.com/feed/",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "Answers 403 to automated feed readers (checked 2026-10-22); we respect the block instead of working around it."
+    },
+    {
+      "id": "tomtunguz",
+      "name": "Tomasz Tunguz",
+      "kind": "rss",
+      "url": "https://tomtunguz.com/index.xml",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "stratechery",
+      "name": "Stratechery",
+      "kind": "rss",
+      "url": "https://stratechery.com/feed/",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "Answers 403 to automated feed readers (checked 2026-10-22); we respect the block instead of working around it."
+    },
+    {
+      "id": "latent-space",
+      "name": "Latent Space",
+      "kind": "rss",
+      "url": "https://www.latent.space/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "semianalysis",
+      "name": "SemiAnalysis",
+      "kind": "rss",
+      "url": "https://www.semianalysis.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "Answers 403 to automated feed readers (checked 2026-10-22); we respect the block instead of working around it."
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "kind": "rss",
+      "url": "https://openai.com/news/rss.xml",
+      "weight": 15,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "google-ai",
+      "name": "Google AI",
+      "kind": "rss",
+      "url": "https://blog.google/technology/ai/rss/",
+      "weight": 13,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "huggingface",
+      "name": "Hugging Face",
+      "kind": "rss",
+      "url": "https://huggingface.co/blog/feed.xml",
+      "weight": 11,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed",
+      "tags": [
+        "ai",
+        "open-source"
+      ]
+    },
+    {
+      "id": "github-blog",
+      "name": "GitHub Blog",
+      "kind": "rss",
+      "url": "https://github.blog/feed/",
+      "weight": 10,
+      "filter": false,
+      "category": "launch",
+      "claim": "confirmed",
+      "tags": [
+        "devtools"
+      ]
+    },
+    {
+      "id": "reddit",
+      "name": "Reddit",
+      "kind": "reddit",
+      "url": "https://www.reddit.com/r/startups+SaaS+Entrepreneur+ycombinator+venturecapital/top/.rss?t=day&limit=40",
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    }
+  ]
+}
