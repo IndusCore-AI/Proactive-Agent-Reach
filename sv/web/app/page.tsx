@@ -47,10 +47,9 @@ export default async function Today({ searchParams }: { searchParams: SP }) {
     <>
       <Bar current="today" />
       <div className="wrap">
-        <header className="masthead">
-          <p className="kicker">Startups · Funding · Launches · Founders · VCs</p>
+        <header className="masthead compact">
           <h1 className="display">{SITE_NAME}</h1>
-          <p className="tagline">{TAGLINE}</p>
+          <p className="tagline">Startup funding, launches, founders and VCs: the day&apos;s best, from the sources that break it.</p>
         </header>
         {feed.date ? (
           <EditionView feed={feed} basePath={basePath} category={category} source={source} page={page} notice={notice} />

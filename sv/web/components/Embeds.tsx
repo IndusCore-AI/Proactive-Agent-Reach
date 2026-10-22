@@ -13,9 +13,11 @@ let widgetsRequested = false;
 /** X's official embed. The server renders X's documented blockquote markup
  * (readable without JS and by crawlers); widgets.js upgrades it only once the
  * post nears the viewport, so a page of cards never loads X up front. */
-export function XEmbed({ id, title, url }: { id: string; title: string; url: string }) {
+export function XEmbed({ id, title }: { id: string; title: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   useEffect(() => {
+    setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
@@ -33,23 +35,23 @@ export function XEmbed({ id, title, url }: { id: string; title: string; url: str
           document.body.appendChild(s);
         }
       },
-      { rootMargin: '400px 0px' },
+      { rootMargin: '600px 0px' },
     );
     io.observe(el);
     return () => io.disconnect();
   }, []);
   return (
-    <div className="embed" ref={ref}>
-      <blockquote className="twitter-tweet embed-fallback" data-dnt="true" data-conversation="none">
-        <p>{title}</p>
+    <div className="embed x-embed" ref={ref}>
+      <blockquote className="twitter-tweet embed-fallback" data-dnt="true" data-conversation="none" data-theme={theme}>
+        <p>Post about: {title}</p>
         <a href={`https://twitter.com/i/status/${id}`}>View this post on X</a>
-        <span className="sr-only"> ({url})</span>
       </blockquote>
     </div>
   );
 }
 
-/** YouTube's player, loaded only when asked for (privacy-enhanced domain). */
+/** YouTube's player, loaded only when asked for (privacy-enhanced domain).
+ * Until then it shows YouTube's own poster frame for the video. */
 export function YouTubeEmbed({ id, title }: { id: string; title: string }) {
   const [on, setOn] = useState(false);
   return (
@@ -65,14 +67,10 @@ export function YouTubeEmbed({ id, title }: { id: string; title: string }) {
           />
         ) : (
           <button type="button" className="yt-play" onClick={() => setOn(true)} aria-label={`Play video: ${title}`}>
-            <span>
-              <span className="icon" aria-hidden="true">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z" /></svg>
-              </span>
-            </span>
-            <span>
-              Play on YouTube
-              <small>Loads YouTube&apos;s player</small>
+            {/* eslint-disable-next-line @next/next/no-img-element -- YouTube's own poster frame */}
+            <img src={`https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`} alt="" loading="lazy" referrerPolicy="no-referrer" />
+            <span className="yt-badge" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
             </span>
           </button>
         )}

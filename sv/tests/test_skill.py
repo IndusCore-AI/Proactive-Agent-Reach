@@ -124,3 +124,29 @@ def test_off_topic_is_penalised():
     off = collect.prescore(collect.candidate(src, url="https://example.com/dice", title="Roman dice found in a field near the river", published=now), now)
     on = collect.prescore(collect.candidate(src, url="https://example.com/raise", title="Startup raises seed round for AI agents", published=now), now)
     assert off["score_detail"]["off_topic"] == -25 and on["score"] > off["score"]
+
+
+import enrich  # noqa: E402
+
+
+def test_feed_images():
+    rss = collect.parse_feed(b"""<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel>
+<item><title>A</title><link>https://a.com/1</link><enclosure url="https://img.a.com/1.jpg" type="image/jpeg"/></item>
+<item><title>B</title><link>https://a.com/2</link><media:content url="https://img.a.com/2.png" medium="image"/></item>
+<item><title>C</title><link>https://a.com/3</link><description><![CDATA[<p><img src="https://img.a.com/3.webp?w=1&amp;h=2"/>x</p>]]></description></item>
+<item><title>D</title><link>https://a.com/4</link><enclosure url="http://img.a.com/insecure.jpg" type="image/jpeg"/></item>
+</channel></rss>""")
+    assert [e["image"] for e in rss] == ["https://img.a.com/1.jpg", "https://img.a.com/2.png", "https://img.a.com/3.webp?w=1&h=2", None]
+
+
+def test_page_parser_finds_image_embeds_and_cited_posts():
+    p = enrich._Page()
+    p.feed("""<html><head><meta content="https://cdn.x.com/og.jpg" property="og:image"></head><body>
+<nav><a href="https://x.com/publisher/status/1111111111">share</a></nav>
+<p>The CEO <a href="https://x.com/founder/status/2222222222?s=46&amp;t=abc">said</a> it.</p>
+<blockquote class="twitter-tweet"><p>hi</p><a href="https://twitter.com/company/status/3333333333">date</a></blockquote>
+<iframe src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?rel=0"></iframe></body></html>""")
+    assert p.meta["og:image"] == "https://cdn.x.com/og.jpg"
+    assert p.tweets == ["https://twitter.com/company/status/3333333333"]
+    assert p.cited == ["https://x.com/founder/status/2222222222"]     # nav share link ignored
+    assert p.videos == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]

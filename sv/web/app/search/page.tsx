@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 import { Bar } from '@/components/Chrome';
-import { StoryCard } from '@/components/StoryCard';
+import { Card } from '@/components/Cards';
 import { search } from '@/lib/api';
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
@@ -32,7 +32,7 @@ export default async function Search({ searchParams }: { searchParams: SP }) {
             </button>
           </form>
         </header>
-        <main id="main" style={{ maxWidth: 820, paddingBottom: 56 }}>
+        <main id="main" style={{ paddingBottom: 56 }}>
           {results && (
             <p className="edition-meta" style={{ marginTop: 16 }} role="status">
               {results.total} {results.total === 1 ? 'result' : 'results'} for “{q}”
@@ -40,11 +40,11 @@ export default async function Search({ searchParams }: { searchParams: SP }) {
           )}
           {results && results.total === 0 && <p className="empty">Nothing in the archive matches. Try a company name or a broader word.</p>}
           {results && results.items.length > 0 && (
-            <ul className="stories">
+            <div className="grid">
               {results.items.map((it) => (
-                <StoryCard key={it.id} item={it} showEdition />
+                <Card key={it.id} item={it} showEdition />
               ))}
-            </ul>
+            </div>
           )}
         </main>
       </div>

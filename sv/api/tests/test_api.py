@@ -165,6 +165,24 @@ def test_filters_and_embed(client):
     assert launches["items"][0]["url"] == "https://x.com/founder/status/1850000000000000001"
 
 
+def test_images_and_embeds(client):
+    run = start(client)
+    good = item(url="https://example.com/launch-one", title="Example launches a robot barista for offices",
+                source="example", source_name="Example", category="launch", funding=None,
+                image_url="https://cdn.example.com/og.png?w=1200&h=630", image_kind="cover",
+                embed_url="https://x.com/founder/status/1850000000000000002", score=40)
+    bad = [item(url=f"https://example.com/bad-{i}", title=f"Bad image story number {i} for testing", source="example",
+                source_name="Example", category="news", funding=None, image_url=u, score=10)
+           for i, u in enumerate(["http://cdn.example.com/a.png", "javascript:alert(1)", "https://localhost/a.png",
+                                  'https://cdn.example.com/a.png" onerror="x'])]
+    r = client.post(f"/v1/ingest/runs/{run}/items", json={"items": [good, *bad]}, headers=client.ingest).json()
+    assert (r["inserted"], r["rejected"]) == (1, 4), r
+    client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest)
+    one = client.get(f"/v1/items/{r['results'][0]['id']}", headers=client.read).json()
+    assert one["image_url"] == "https://cdn.example.com/og.png?w=1200&h=630" and one["image_kind"] == "cover"
+    assert one["embed"] == {"type": "x", "ref": "1850000000000000002"}
+
+
 def test_finish_twice_conflicts(client):
     run = start(client)
     assert client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest).status_code == 200

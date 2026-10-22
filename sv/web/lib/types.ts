@@ -36,6 +36,8 @@ export interface Item {
   funding: Funding | null;
   embed: { type: 'x' | 'youtube'; ref: string } | null;
   score: number;
+  image_url?: string | null;
+  image_kind?: 'cover' | 'logo' | null;
   rank?: number;
   feed_date?: string;
   mentions?: Mention[];

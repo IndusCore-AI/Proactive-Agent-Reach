@@ -82,7 +82,8 @@ def load_curated(path: Path) -> list[dict]:
     if problems:
         sys.exit("curated file is incomplete:\n  " + "\n  ".join(problems[:20]))
     allowed = {"url", "title", "source", "source_name", "category", "tags", "excerpt", "summary", "author",
-               "published_at", "claim_status", "funding", "embed_url", "mentions", "score", "score_detail"}
+               "published_at", "claim_status", "funding", "embed_url", "mentions", "score", "score_detail",
+               "image_url", "image_kind"}
     return [{k: v for k, v in it.items() if k in allowed and v is not None} for it in items]
 
 

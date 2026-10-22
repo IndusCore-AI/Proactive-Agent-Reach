@@ -115,7 +115,9 @@ class ItemIn(BaseModel):
     published_at: datetime | None = None
     claim_status: ClaimStatus = "reported"
     funding: Funding | None = None
-    embed_url: str | None = None   # an X post or YouTube video that is the story itself
+    embed_url: str | None = None   # an X post or YouTube video: the story itself, or one the source embedded
+    image_url: str | None = Field(default=None, max_length=1000)   # link to the publisher's own image
+    image_kind: Literal["cover", "logo"] | None = None
     mentions: list[Mention] = Field(default_factory=list, max_length=10)
     score: float = Field(ge=0, le=100)
     score_detail: dict[str, Any] | None = None
@@ -124,6 +126,17 @@ class ItemIn(BaseModel):
     @classmethod
     def _url(cls, v: str) -> str:
         return svlib.canonical_url(v)
+
+    @field_validator("image_url")
+    @classmethod
+    def _image(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v.startswith("https://") or any(c.isspace() for c in v) or any(c in v for c in "<>\"'"):
+            raise ValueError("image_url must be a plain https URL")
+        svlib.canonical_url(v)  # same public-host rules as story URLs; the original string is kept
+        return v
 
     @field_validator("title", "excerpt", "summary", "author", "source_name")
     @classmethod
@@ -190,7 +203,7 @@ class RunFinish(BaseModel):
 ITEM_COLUMNS = """
     i.id, i.url, i.source, i.source_name, i.title, i.excerpt, i.summary, i.author,
     i.published_at, i.discovered_at, i.updated_at, i.category, i.tags, i.claim_status,
-    i.funding, i.embed_type, i.embed_ref, i.score
+    i.funding, i.embed_type, i.embed_ref, i.score, i.image_url, i.image_kind
 """
 
 
@@ -428,17 +441,25 @@ def _merge_into(conn, target: str, it: ItemIn) -> None:
     it.mentions.insert(0, Mention(url=it.url, source=it.source, label=it.source_name))
     conn.execute(
         "update items set tags = (select array(select distinct t from unnest(tags || %s::text[]) t limit 8)), "
-        "score = greatest(score, %s), updated_at = now() where id = %s", (it.tags, it.score, target))
+        "score = greatest(score, %s), image_url = coalesce(image_url, %s), "
+        "image_kind = case when image_url is null then %s else image_kind end, updated_at = now() where id = %s",
+        (it.tags, it.score, it.image_url, it.image_kind if it.image_url else None, target))
+    embed = (svlib.detect_embed(it.embed_url) if it.embed_url else None) or svlib.detect_embed(it.url)
+    if embed:
+        conn.execute(
+            "update items set embed_ref = case when embed_type is null then %s else embed_ref end, "
+            "embed_type = coalesce(embed_type, %s) where id = %s", (embed[1], embed[0], target))
 
 
 def _upsert(conn, item_id_: str, it: ItemIn) -> None:
     embed = (svlib.detect_embed(it.embed_url) if it.embed_url else None) or svlib.detect_embed(it.url)
     conn.execute(
         """insert into items (id, url, dedupe_key, source, source_name, title, excerpt, summary, author,
-               published_at, category, tags, claim_status, funding, embed_type, embed_ref, score, score_detail)
+               published_at, category, tags, claim_status, funding, embed_type, embed_ref, score, score_detail,
+               image_url, image_kind)
            values (%(id)s, %(url)s, %(key)s, %(source)s, %(source_name)s, %(title)s, %(excerpt)s, %(summary)s,
                %(author)s, %(published_at)s, %(category)s, %(tags)s, %(claim_status)s, %(funding)s,
-               %(embed_type)s, %(embed_ref)s, %(score)s, %(score_detail)s)
+               %(embed_type)s, %(embed_ref)s, %(score)s, %(score_detail)s, %(image_url)s, %(image_kind)s)
            on conflict (id) do update set
                url = excluded.url, title = excluded.title, source_name = excluded.source_name,
                dedupe_key = excluded.dedupe_key,
@@ -450,6 +471,8 @@ def _upsert(conn, item_id_: str, it: ItemIn) -> None:
                funding = coalesce(excluded.funding, items.funding),
                embed_type = coalesce(excluded.embed_type, items.embed_type),
                embed_ref = coalesce(excluded.embed_ref, items.embed_ref),
+               image_url = coalesce(excluded.image_url, items.image_url),
+               image_kind = case when excluded.image_url is not null then excluded.image_kind else items.image_kind end,
                score = excluded.score, score_detail = excluded.score_detail, updated_at = now()""",
         {
             "id": item_id_, "url": it.url, "key": svlib.dedupe_key(it.title), "source": it.source,
@@ -459,6 +482,7 @@ def _upsert(conn, item_id_: str, it: ItemIn) -> None:
             "funding": Jsonb(it.funding.model_dump(exclude_none=True)) if it.funding else None,
             "embed_type": embed[0] if embed else None, "embed_ref": embed[1] if embed else None,
             "score": it.score, "score_detail": Jsonb(it.score_detail) if it.score_detail else None,
+            "image_url": it.image_url, "image_kind": it.image_kind if it.image_url else None,
         },
     )
 

@@ -4,7 +4,8 @@ import { notFound, permanentRedirect } from 'next/navigation';
 
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { XEmbed, YouTubeEmbed } from '@/components/Embeds';
-import { StoryCard } from '@/components/StoryCard';
+import { Card } from '@/components/Cards';
+import { Thumb } from '@/components/Thumb';
 import { ApiError, getItem } from '@/lib/api';
 import {
   CATEGORY_LABEL, CLAIM_LABEL, SITE_NAME, abs, compactNumber, fundingLine, hostOf, idFromSlug, longDate, storyPath,
@@ -111,6 +112,9 @@ export default async function StoryPage({ params }: { params: Params }) {
           <li aria-current="page">{CATEGORY_LABEL[item.category]}</li>
         </ol>
         <main id="main" className="detail">
+          <a className="detail-pic" href={item.url} rel="noopener" target="_blank" tabIndex={-1} aria-hidden="true">
+            <Thumb src={item.image_url} kind={item.image_kind} publisher={item.source_name} category={item.category} eager />
+          </a>
           <div className="labels">
             <span className={`cat cat-${item.category}`}>{CATEGORY_LABEL[item.category]}</span>
             <span className={`claim claim-${item.claim_status}`}>{CLAIM_LABEL[item.claim_status]}</span>
@@ -137,7 +141,7 @@ export default async function StoryPage({ params }: { params: Params }) {
               <small>As stated by {item.source_name}.</small>
             </p>
           )}
-          {item.embed?.type === 'x' && <XEmbed id={item.embed.ref} title={item.title} url={item.url} />}
+          {item.embed?.type === 'x' && <XEmbed id={item.embed.ref} title={item.title} />}
           {item.embed?.type === 'youtube' && <YouTubeEmbed id={item.embed.ref} title={item.title} />}
           <div className="cta">
             <a className="btn primary" href={item.url} rel="noopener" target="_blank">
@@ -199,15 +203,15 @@ export default async function StoryPage({ params }: { params: Params }) {
           </dl>
         </main>
         {item.related.length > 0 && (
-          <section className="section" aria-labelledby="related" style={{ maxWidth: 760, paddingBottom: 48 }}>
+          <section className="section" aria-labelledby="related" style={{ paddingBottom: 48 }}>
             <div className="section-head">
               <h2 id="related">Related stories</h2>
             </div>
-            <ul className="stories">
-              {item.related.map((r) => (
-                <StoryCard key={r.id} item={r} showEdition />
+            <div className="grid">
+              {item.related.slice(0, 6).map((r) => (
+                <Card key={r.id} item={r} showEdition />
               ))}
-            </ul>
+            </div>
           </section>
         )}
       </div>

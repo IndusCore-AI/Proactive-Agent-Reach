@@ -74,14 +74,14 @@ def _ssl_context() -> ssl.SSLContext:
 SSL_CONTEXT = _ssl_context()
 
 
-def fetch(url: str, *, timeout: float = 20, tries: int = 3) -> bytes:
+def fetch(url: str, *, timeout: float = 20, tries: int = 3, max_bytes: int = 8_000_000) -> bytes:
     """GET with a short retry on 429/5xx/timeouts, honouring Retry-After up to 20s."""
     last = ""
     for attempt in range(tries):
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT) as resp:
-                return resp.read(8_000_000)
+                return resp.read(max_bytes)
         except urllib.error.HTTPError as e:
             last = f"HTTP {e.code}"
             if e.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
@@ -201,8 +201,28 @@ def _text(el: ET.Element | None) -> str:
     return (el.text or "").strip() if el is not None else ""
 
 
+IMG_SRC = re.compile(r'<img[^>]+src="(https://[^"]+)"', re.I)
+IMAGE_EXT = re.compile(r"\.(jpe?g|png|webp|avif|gif)(\?|$)", re.I)
+
+
+def feed_image(it: ET.Element, html_text: str) -> str | None:
+    """The image a feed item carries: an image enclosure, media:content or
+    media:thumbnail, else the first <img> in its HTML. A link, never a copy."""
+    for enc in it.findall("enclosure"):
+        if enc.get("type", "").startswith("image/") and enc.get("url", "").startswith("https://"):
+            return enc.get("url")
+    for tag in ("media:content", "media:thumbnail", "media:group/media:content"):
+        for m in it.findall(tag, NS):
+            url = m.get("url", "")
+            if url.startswith("https://") and (m.get("medium") == "image" or m.get("type", "").startswith("image/")
+                                               or IMAGE_EXT.search(url) or tag.endswith("thumbnail")):
+                return url
+    m = IMG_SRC.search(html_text or "")
+    return html.unescape(m.group(1)) if m else None
+
+
 def parse_feed(raw: bytes) -> list[dict]:
-    """RSS 2.0 and Atom entries as {title, link, published, html, author}."""
+    """RSS 2.0 and Atom entries as {title, link, published, html, author, image}."""
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as e:
@@ -218,6 +238,7 @@ def parse_feed(raw: bytes) -> list[dict]:
                 "description": _text(it.find("description")),
                 "html": _text(it.find("description")) or _text(content),
                 "author": _text(it.find("dc:creator", NS)) or _text(it.find("author")),
+                "image": feed_image(it, _text(it.find("description")) + _text(content)),
             })
     else:
         for it in root.iter(f"{{{NS['atom']}}}entry"):
@@ -233,6 +254,7 @@ def parse_feed(raw: bytes) -> list[dict]:
                 "description": "",
                 "html": _text(it.find("atom:summary", NS)) or _text(it.find("atom:content", NS)),
                 "author": _text(it.find("atom:author/atom:name", NS)),
+                "image": feed_image(it, _text(it.find("atom:content", NS)) or _text(it.find("atom:summary", NS))),
             })
     return out
 
@@ -317,7 +339,8 @@ def funding_hint(text: str) -> dict | None:
 
 def candidate(src: dict, *, url: str, title: str, published: datetime | None, text: str = "", author: str = "",
               source_name: str | None = None, mentions: list[dict] | None = None, engagement: dict | None = None,
-              tags: list[str] | None = None, category: str | None = None, extra: dict | None = None) -> dict | None:
+              tags: list[str] | None = None, category: str | None = None, extra: dict | None = None,
+              image_url: str | None = None, image_kind: str = "cover") -> dict | None:
     try:
         url = svlib.canonical_url(url)
     except ValueError:
@@ -343,6 +366,8 @@ def candidate(src: dict, *, url: str, title: str, published: datetime | None, te
         "mentions": mentions or [],
         "engagement": engagement or {},
         "found_in": [src["id"]],
+        "image_url": image_url if image_url and image_url.startswith("https://") else None,
+        "image_kind": image_kind if image_url else None,
         "weight": src["weight"],
         "relevant": bool(RELEVANT.search(blob)),
         **({"extra": extra} if extra else {}),
@@ -371,7 +396,8 @@ def collect_rss(src: dict, start: datetime, end: datetime) -> tuple[list[dict], 
             if src.get("original_in_description"):
                 text = re.sub(r"^.{0,80}?:\s", "", text)  # drop "Bloomberg:" style lead-in
             c = candidate(src, url=url, title=html_to_text(e["title"]), published=e["published"], text=text,
-                          author=e["author"], source_name=source_name, mentions=mentions)
+                          author=e["author"], source_name=source_name, mentions=mentions,
+                          image_url=None if src.get("original_in_description") else e.get("image"))
             if c:
                 out.append(c)
     return out, fetched
@@ -450,6 +476,7 @@ def collect_yc(src: dict, start: datetime, end: datetime) -> tuple[list[dict], i
                 engagement={"votes": h.get("total_vote_count") or 0}, tags=tags,
                 extra={"company": company.get("name"), "batch": company.get("batch"), "company_url": company.get("url"),
                        "industry": company.get("industry")},
+                image_url=company.get("logo"), image_kind="logo",
             )
             if c:
                 c["excerpt"] = (text or None) and text[:300]
@@ -522,6 +549,8 @@ def merge(cands: list[dict]) -> list[dict]:
                 seen.add(m["url"])
         for k, v in (c.get("engagement") or {}).items():
             twin.setdefault("engagement", {}).setdefault(k, v)
+        if not twin.get("image_url") and c.get("image_url"):
+            twin["image_url"], twin["image_kind"] = c["image_url"], c.get("image_kind")
         for t in c["tags"]:
             if t not in twin["tags"] and len(twin["tags"]) < 6:
                 twin["tags"].append(t)

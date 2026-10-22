@@ -1,10 +1,10 @@
 import Link from 'next/link';
 
-import { CATEGORIES, CATEGORY_LABEL, longDate, shortDate, storyPath, tagLabel, timePT, todayPT, abs, SITE_NAME } from '@/lib/format';
+import { CATEGORIES, CATEGORY_LABEL, longDate, shortDate, storyPath, timePT, todayPT, abs, SITE_NAME } from '@/lib/format';
 import type { Category, Feed, Item } from '@/lib/types';
 
 import { HomeLink, JsonLd } from './Chrome';
-import { StoryCard } from './StoryCard';
+import { Card, CompactRow, EmbedCard, HeroCard } from './Cards';
 
 export const PAGE_SIZE = 100;
 
@@ -27,10 +27,29 @@ function editionHref(basePath: string, q: { category?: string; source?: string; 
   return `${basePath}${s ? `?${s}` : ''}`;
 }
 
-function topTags(items: Item[], n = 10): [string, number][] {
-  const counts = new Map<string, number>();
-  for (const it of items) for (const t of it.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n);
+const SECTION_MAX = 6;
+
+function Grid({ items }: { items: Item[] }) {
+  const rows = items.filter((i) => i.category === 'discussion');
+  const cards = items.filter((i) => i.category !== 'discussion');
+  return (
+    <>
+      {cards.length > 0 && (
+        <div className="grid">
+          {cards.map((it) => (
+            <Card key={it.id} item={it} />
+          ))}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="rows">
+          {rows.map((it) => (
+            <CompactRow key={it.id} item={it} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 }
 
 export function DatePicker({ value }: { value?: string }) {
@@ -56,14 +75,25 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
   const isToday = date === todayPT();
   const sourcesOk = run?.sources.filter((s) => s.ok).length ?? 0;
   const items = feed.items;
+  const front = !filtered && page === 1;
 
-  // Unfiltered first page: the three highest-ranked stories lead, the rest
-  // follow grouped by kind so funding, launches, news, discussion and analysis
-  // never blur together.
-  const lead = !filtered && page === 1 ? items.slice(0, 3) : [];
-  const rest = !filtered && page === 1 ? items.slice(3) : items;
-  const groups = CATEGORIES.map((c) => ({ ...c, items: rest.filter((i) => i.category === c.key) })).filter((g) => g.items.length);
-
+  // Front page: the lead story and three more up top, then the posts and
+  // videos the day's stories are about, then each kind in its own section
+  // (six at most, the rest one click away). Nothing is shown twice.
+  const shown = new Set<string>();
+  const take = (list: Item[]) => {
+    list.forEach((i) => shown.add(i.id));
+    return list;
+  };
+  const lead = front ? take(items.slice(0, 4)) : [];
+  const watch = front ? take(items.filter((i) => i.embed && !shown.has(i.id)).slice(0, 6)) : [];
+  const leadEmbeds = front ? lead.filter((i) => i.embed) : [];
+  const groups = front
+    ? CATEGORIES.map((c) => {
+        const all = items.filter((i) => i.category === c.key && !shown.has(i.id));
+        return { ...c, all, items: all.slice(0, c.key === 'discussion' ? 8 : SECTION_MAX) };
+      }).filter((g) => g.items.length)
+    : [];
   const pages = Math.max(1, Math.ceil(feed.total / PAGE_SIZE));
   const url = abs(basePath);
 
@@ -100,9 +130,7 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
           <p className="edition-meta">
             <span className={`fresh${isToday ? '' : ' stale'}`}>
               {totalAll} {totalAll === 1 ? 'story' : 'stories'}
-              {run?.finished_at ? `, compiled ${timePT(run.finished_at)}` : ''}
-              {run && run.sources.length > 0 ? ` from ${sourcesOk} of ${run.sources.length} sources` : ''}
-              {run?.status === 'partial' ? ' (some sources failed)' : ''}
+              {run?.finished_at ? ` · updated ${timePT(run.finished_at).replace(/^[A-Z][a-z]{2} \d+, /, '')}` : ''}
             </span>
           </p>
         </div>
@@ -121,125 +149,109 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
         </nav>
       </div>
       {notice}
-      <div className="layout">
-        <main id="main">
-          <ul className="chips" aria-label="Filter by kind">
-            <li>
-              <Link className="chip" href={editionHref(basePath, {})} aria-current={!filtered ? 'true' : undefined}>
-                All <span className="n">{totalAll}</span>
+      <main id="main" className="front">
+        <ul className="chips" aria-label="Filter by kind">
+          <li>
+            <Link className="chip" href={editionHref(basePath, {})} aria-current={!filtered ? 'true' : undefined}>
+              All <span className="n">{totalAll}</span>
+            </Link>
+          </li>
+          {CATEGORIES.filter((c) => cats[c.key]).map((c) => (
+            <li key={c.key}>
+              <Link className="chip" href={editionHref(basePath, { category: c.key })} aria-current={category === c.key ? 'true' : undefined} rel="nofollow">
+                {c.plural} <span className="n">{cats[c.key]}</span>
               </Link>
             </li>
-            {CATEGORIES.filter((c) => cats[c.key]).map((c) => (
-              <li key={c.key}>
-                <Link className="chip" href={editionHref(basePath, { category: c.key })} aria-current={category === c.key ? 'true' : undefined} rel="nofollow">
-                  {c.plural} <span className="n">{cats[c.key]}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-          {filtered && (
-            <p className="edition-meta">
-              Showing {feed.total} {category ? CATEGORY_LABEL[category].toLowerCase() : ''} {source ? `from ${feed.facets.sources?.[source]?.name ?? source}` : ''}{' '}
-              {feed.total === 1 ? 'story' : 'stories'} from this edition. <Link href={editionHref(basePath, {})}>Show all</Link>
-            </p>
-          )}
-          {items.length === 0 && <p className="empty">Nothing matches this filter in this edition.</p>}
-          {lead.length > 0 && (
-            <section className="section" aria-labelledby="top">
-              <div className="section-head">
-                <h2 id="top">Top stories</h2>
-                <span>Ranked by recency, engagement and source signal</span>
+          ))}
+        </ul>
+        {filtered && (
+          <p className="edition-meta">
+            {feed.total} {category ? CATEGORY_LABEL[category].toLowerCase() : ''} {source ? `from ${run?.sources.find((s) => s.source === source)?.name ?? source}` : ''}{' '}
+            {feed.total === 1 ? 'story' : 'stories'} in this edition · <Link href={editionHref(basePath, {})}>Show all</Link>
+          </p>
+        )}
+        {items.length === 0 && <p className="empty">Nothing matches this filter in this edition.</p>}
+
+        {lead.length > 0 && (
+          <section className="section" aria-labelledby="top">
+            <h2 id="top" className="sr-only">
+              Top stories
+            </h2>
+            <div className="lead">
+              <HeroCard item={lead[0]} />
+              <div className="lead-side">
+                {lead.slice(1).map((it) => (
+                  <Card key={it.id} item={it} />
+                ))}
               </div>
-              <ul className="stories lead">
-                {lead.map((it) => (
-                  <StoryCard key={it.id} item={it} headingLevel={3} />
-                ))}
-              </ul>
-            </section>
-          )}
-          {!filtered && page === 1
-            ? groups.map((g) => (
-                <section className="section" key={g.key} aria-labelledby={`g-${g.key}`}>
-                  <div className="section-head">
-                    <h2 id={`g-${g.key}`}>{g.plural}</h2>
-                    <span>{g.items.length}</span>
-                  </div>
-                  <ul className="stories">
-                    {g.items.map((it) => (
-                      <StoryCard key={it.id} item={it} />
-                    ))}
-                  </ul>
-                </section>
-              ))
-            : items.length > 0 && (
-                <ul className="stories">
-                  {items.map((it) => (
-                    <StoryCard key={it.id} item={it} />
-                  ))}
-                </ul>
-              )}
-          {pages > 1 && (
-            <nav className="pager" aria-label="Pages">
-              {page > 1 ? <Link className="btn" href={editionHref(basePath, { category, source, page: page - 1 })}>← Previous page</Link> : <span />}
-              {page < pages ? <Link className="btn" href={editionHref(basePath, { category, source, page: page + 1 })}>Next page →</Link> : <span />}
-            </nav>
-          )}
-        </main>
-        <aside className="rail" aria-label="About this edition">
-          {run && run.sources.length > 0 && (
-            <section className="panel">
-              <h2>Where these came from</h2>
-              <ul>
-                {run.sources
-                  .filter((s) => (s.kept ?? 0) > 0)
-                  .sort((a, b) => (b.kept ?? 0) - (a.kept ?? 0))
-                  .map((s) => (
-                    <li key={s.source}>
-                      <Link href={editionHref(basePath, { source: s.source })} rel="nofollow">
-                        {s.name ?? s.source}
-                      </Link>
-                      <span>{s.kept}</span>
-                    </li>
-                  ))}
-              </ul>
-              <details className="sources-all">
-                <summary>
-                  {sourcesOk} of {run.sources.length} sources answered
-                </summary>
-                <ul>
-                  {run.sources.map((s) => (
-                    <li key={s.source}>
-                      <span>{s.name ?? s.source}</span>
-                      <span className={s.ok ? undefined : 'src-fail'}>{s.ok ? `${s.kept ?? 0} kept` : 'unavailable'}</span>
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            </section>
-          )}
-          {topTags(items).length > 0 && (
-            <section className="panel">
-              <h2>Topics in this edition</h2>
-              <ul>
-                {topTags(items).map(([t, n]) => (
-                  <li key={t}>
-                    <Link href={`/topics/${t}`}>{tagLabel(t)}</Link>
-                    <span>{n}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-          <section className="panel">
-            <h2>How to read this</h2>
-            <p>
-              Titles link to the original source. <b>Confirmed</b> means the company said it; <b>Reported</b> means a
-              publication reported it; <b>Unverified</b> marks a claim nobody independent has checked.{' '}
-              <Link href="/about">Methodology</Link>
-            </p>
+            </div>
           </section>
-        </aside>
-      </div>
+        )}
+
+        {watch.length + leadEmbeds.length > 0 && (
+          <section className="section watch" aria-labelledby="watch">
+            <div className="section-head">
+              <h2 id="watch">Watch and posts</h2>
+              <span>From the people and companies in today&apos;s stories</span>
+            </div>
+            <div className="embed-grid">
+              {[...leadEmbeds, ...watch].map((it) => (
+                <EmbedCard key={it.id} item={it} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {front
+          ? groups.map((g) => (
+              <section className="section" key={g.key} aria-labelledby={`g-${g.key}`}>
+                <div className="section-head">
+                  <h2 id={`g-${g.key}`}>{g.plural}</h2>
+                  {g.all.length > g.items.length && (
+                    <Link className="see-all" href={editionHref(basePath, { category: g.key })} rel="nofollow">
+                      See all {cats[g.key]} →
+                    </Link>
+                  )}
+                </div>
+                <Grid items={g.items} />
+              </section>
+            ))
+          : items.length > 0 && <Grid items={items} />}
+
+        {pages > 1 && (
+          <nav className="pager" aria-label="Pages">
+            {page > 1 ? <Link className="btn" href={editionHref(basePath, { category, source, page: page - 1 })}>← Previous page</Link> : <span />}
+            {page < pages ? <Link className="btn" href={editionHref(basePath, { category, source, page: page + 1 })}>Next page →</Link> : <span />}
+          </nav>
+        )}
+
+        {run && run.sources.length > 0 && (
+          <details className="sources-all">
+            <summary>
+              Gathered from {sourcesOk} of {run.sources.length} sources · how to read this
+            </summary>
+            <p>
+              Headlines link to the original source. <b>Confirmed</b> means the company said it, <b>reported</b> means a
+              publication did, and <b>unverified</b> marks a claim nobody independent has checked.{' '}
+              <Link href="/about">How this feed is made</Link>
+            </p>
+            <ul>
+              {run.sources.map((s) => (
+                <li key={s.source}>
+                  {s.ok && (s.kept ?? 0) > 0 ? (
+                    <Link href={editionHref(basePath, { source: s.source })} rel="nofollow">
+                      {s.name ?? s.source}
+                    </Link>
+                  ) : (
+                    <span>{s.name ?? s.source}</span>
+                  )}
+                  <span className={s.ok ? undefined : 'src-fail'}>{s.ok ? `${s.kept ?? 0}` : 'unavailable'}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </main>
     </>
   );
 }

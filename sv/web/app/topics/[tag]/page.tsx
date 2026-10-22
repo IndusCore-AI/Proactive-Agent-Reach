@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { Bar } from '@/components/Chrome';
-import { StoryCard } from '@/components/StoryCard';
+import { Card } from '@/components/Cards';
 import { getTopic } from '@/lib/api';
 import { SITE_NAME, abs, tagLabel } from '@/lib/format';
 
@@ -56,12 +56,12 @@ export default async function Topic({ params, searchParams }: { params: Params; 
             {data.total} {data.total === 1 ? 'story' : 'stories'} across editions, newest first.
           </p>
         </header>
-        <main id="main" style={{ maxWidth: 820, paddingBottom: 56 }}>
-          <ul className="stories">
+        <main id="main" style={{ paddingBottom: 56 }}>
+          <div className="grid">
             {data.items.map((it) => (
-              <StoryCard key={it.id} item={it} showEdition />
+              <Card key={it.id} item={it} showEdition />
             ))}
-          </ul>
+          </div>
           {pages > 1 && (
             <nav className="pager" aria-label="Pages">
               {page > 1 ? <Link className="btn" href={`/topics/${tag}${page > 2 ? `?page=${page - 1}` : ''}`}>← Newer</Link> : <span />}

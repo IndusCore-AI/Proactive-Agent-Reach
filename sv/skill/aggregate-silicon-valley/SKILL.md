@@ -85,12 +85,26 @@ For each kept candidate, start from its fields and fix them:
 - `embed_url`: only if the story *is* an X post or YouTube video (the site uses the platforms' own embeds).
 - Copy `url`, `source`, `source_name`, `published_at`, `author`, `mentions` from the candidate. Drop the
   helper fields (`id`, `found_in`, `weight`, `relevant`, `engagement`, `funding_hint`, `extra`,
-  `engagement_self`); the ingest script ignores unknown fields anyway.
+  `engagement_self`); the ingest script ignores unknown fields anyway. Keep `image_url` and `image_kind`
+  when the candidate has them (feed images, YC logos).
 
 Writing `curated.json` with a short Python snippet that loads candidates, applies your decisions by
 `id`, and dumps the result is the most reliable way for 30+ items.
 
-**3. Persist and verify.**
+**3. Pictures and embeds.**
+```bash
+python3 -I scripts/enrich.py --curated "$DIR/curated.json"
+```
+It opens each curated story's own page once (robots.txt respected) and adds `image_url` (the page's
+preview image, a link to the publisher's file, never a copy) and `embed_url` (a YouTube video or an X
+post the publisher embedded or cited in the article). Review every embed it prints: each line shows the
+post's author and opening words, or the video's channel and title. Keep it only if it is about the story
+(the company's own announcement, the founder's post, the official advisory, the product demo). Replace it
+with a better "other candidate" or remove `embed_url` for that item in `curated.json` when it is
+off-topic: a publisher's promo for its own podcast, a reply or tribute, an unrelated post. Never invent an
+embed URL; only use ones the script found or that the source itself links.
+
+**4. Persist and verify.**
 ```bash
 python3 -I scripts/ingest.py --date D --curated "$DIR/curated.json" --sources "$DIR/sources.json"
 ```
@@ -100,7 +114,7 @@ and the public page `https://induscore.site/sv/D` shows the top ones. Exit code 
 If items are rejected, read the reason, fix `curated.json`, and rerun the same command: reruns update in
 place and never duplicate.
 
-**4. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
+**5. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
 edition, inserted/updated/merged/rejected, sources that worked and those that failed (with the error),
 whether the database and page checks passed, and the run status (`complete` or `partial`). Say plainly if
 anything failed.
