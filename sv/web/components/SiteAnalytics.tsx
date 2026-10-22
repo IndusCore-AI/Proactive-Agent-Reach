@@ -1,12 +1,15 @@
 'use client';
 
-import { Analytics } from '@vercel/analytics/next';
+import { Analytics } from '@vercel/analytics/react';
 
 // Visitors reach this zone through induscore.site, whose Vercel project
 // (ai-native-crm-website) already has Web Analytics on. Loading the script and
 // sending page views to the host root records /sv/* in that same dashboard;
 // the basePath default (/sv/_vercel/...) would point at this zone's project,
 // where Vercel only lets analytics be switched on from the dashboard.
+// The React adapter, not the Next one: the Next adapter reports the router's
+// path, which drops the /sv basePath, so this zone's "/" would be counted as
+// the IndusCore homepage. This one reports the real location (/sv/...).
 // Search terms are dropped before sending: page views keep the path and the
 // filter, never what someone typed.
 export function SiteAnalytics() {
