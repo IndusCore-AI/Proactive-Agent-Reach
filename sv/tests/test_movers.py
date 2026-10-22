@@ -37,7 +37,7 @@ def test_a_complete_mover_has_no_problems():
     (mover(traction=[{"label": "Users", "value": "10k", "source_url": "https://example.com"}]), "as_of"),
     (mover(traction=[{"label": "U", "value": "1", "source_url": "https://example.com", "as_of": "2026-10-01"}] * 9), "at most 8"),
     (mover(id="Example Robotics"), "lowercase slug"),
-    (mover(id="unlock"), "not unlock/lock"),
+    (mover(id="unlock"), "not unlock/lock/updates"),
     (mover(kind="person"), "kind must be"),
     (mover(take="belongs under notes"), "unknown fields ['take']"),
     (mover(notes={"takes": "typo"}), "notes has unknown fields"),
@@ -87,3 +87,34 @@ def test_subcommands_are_dispatched_before_the_edition_parser(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ingest.py", "link", "example-robotics", "https://example.com/story"])
     ingest.main()
     assert seen["link"] == ["example-robotics", "https://example.com/story"]
+
+
+SCORE = {"lines": {"demand": 10, "problem": 7, "fit": 12, "wedge": 6, "market": 7, "future": 10, "moat": 5, "whitespace": 3},
+         "market": "Example market", "verdict": "A private verdict line."}
+
+
+def test_a_scored_proposal_has_no_problems():
+    assert ingest.mover_problems(mover(status="proposed", notes={"take": "x", "score": SCORE})) == []
+    assert ingest.notes_problems({"score": SCORE}) == []
+    assert ingest.notes_problems({"score": {**SCORE, "total": 60}}) == []
+
+
+@pytest.mark.parametrize("bad,expected", [
+    ({**SCORE, "lines": {**SCORE["lines"], "demand": 26}}, "from 0 to 25"),
+    ({**SCORE, "lines": {"demand": 1}}, "must be exactly"),
+    ({**SCORE, "total": 99}, "not the sum"),
+    ({**SCORE, "market": ""}, "name the target market"),
+    ({**SCORE, "stars": 5}, "unknown fields"),
+])
+def test_bad_scores_are_caught(bad, expected):
+    assert any(expected in p for p in ingest.notes_problems({"score": bad}))
+
+
+def test_status_and_reserved_ids():
+    assert any("status must be" in p for p in ingest.mover_problems(mover(status="live")))
+    assert any("not unlock/lock/updates" in p for p in ingest.mover_problems(mover(id="updates")))
+
+
+def test_the_leak_check_covers_a_score_verdict():
+    texts = ingest.note_texts([mover(notes={"take": "A take.", "score": SCORE})])
+    assert "A private verdict line." in texts and "A take." in texts

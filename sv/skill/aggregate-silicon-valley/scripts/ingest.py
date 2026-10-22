@@ -3,10 +3,12 @@
 
   python3 ingest.py --date YYYY-MM-DD --curated curated.json --sources sources.json
   python3 ingest.py --check                     # token + API reachability only
-  python3 ingest.py movers movers.json          # add/update movers (only when a founder asks)
+  python3 ingest.py movers movers.json          # propose/update movers (new ones wait on the founders' desk)
   python3 ingest.py movers --list               # every mover: id, kind, status, name
   python3 ingest.py link MOVER_ID STORY_URL...  # point stories already in the feed at a mover
   python3 ingest.py archive MOVER_ID            # stop watching a mover (hides it from the site)
+  python3 ingest.py notes MOVER_ID notes.json   # update only the take or the office-hours score
+  python3 ingest.py feedback                    # the founders' votes, reasons and stages
 
 Talks only to the public site's ingest endpoint (default
 https://induscore.site/sv/api/ingest), which forwards to the VM API with your
@@ -95,12 +97,53 @@ def load_curated(path: Path) -> list[dict]:
 # ---------------------------------------------------------------- movers
 
 MOVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,59}$")
-RESERVED_MOVER_IDS = {"unlock", "lock"}
+RESERVED_MOVER_IDS = {"unlock", "lock", "updates"}
 MOVER_KINDS = {"company", "app", "skill"}
 MOVER_FIELDS = {"id", "name", "kind", "url", "one_liner", "summary", "traction", "markets_live", "claim_status",
                 "tags", "image_url", "image_kind", "status", "notes", "item_urls"}
 TRACTION_FIELDS = {"label", "value", "source_url", "as_of"}
 NOTE_FIELDS = {"take": 1500, "learn": 1000, "localize": 1000}
+# The office-hours rubric (teamctx k:878): line -> maximum points.
+RUBRIC = {"demand": 25, "problem": 10, "fit": 15, "wedge": 10, "market": 10, "future": 15, "moat": 10, "whitespace": 5}
+MOVER_STATUSES = ("proposed", "watching", "archived")
+
+
+def score_problems(score: object) -> list[str]:
+    """notes.score: {"lines": {8 rubric lines}, "market": "named market", "verdict": "..."}."""
+    if not isinstance(score, dict):
+        return ["notes.score must be an object with lines, market and verdict"]
+    out = []
+    if set(score) - {"lines", "market", "verdict", "total"}:
+        out.append(f"notes.score has unknown fields {sorted(set(score) - {'lines', 'market', 'verdict', 'total'})}")
+    lines = score.get("lines")
+    if not isinstance(lines, dict) or set(lines) != set(RUBRIC):
+        out.append(f"notes.score.lines must be exactly {', '.join(RUBRIC)}")
+    else:
+        for k, cap in RUBRIC.items():
+            if not isinstance(lines[k], int) or not 0 <= lines[k] <= cap:
+                out.append(f"notes.score.lines.{k} must be a whole number from 0 to {cap}")
+        if "total" in score and score["total"] != sum(v for v in lines.values() if isinstance(v, int)):
+            out.append("notes.score.total is not the sum of the lines (leave it out; the server adds it up)")
+    if not isinstance(score.get("market"), str) or not score["market"].strip() or len(score["market"]) > 120:
+        out.append("notes.score.market must name the target market (1-120 characters)")
+    if score.get("verdict") is not None and (not isinstance(score["verdict"], str) or len(score["verdict"]) > 300):
+        out.append("notes.score.verdict must be text of at most 300 characters")
+    return out
+
+
+def notes_problems(notes: object) -> list[str]:
+    if not isinstance(notes, dict):
+        return ["notes must be an object with take / learn / localize / score"]
+    out = []
+    allowed = set(NOTE_FIELDS) | {"score"}
+    if set(notes) - allowed:
+        out.append(f"notes has unknown fields {sorted(set(notes) - allowed)}")
+    for k, cap in NOTE_FIELDS.items():
+        if isinstance(notes.get(k), str) and len(notes[k]) > cap:
+            out.append(f"notes.{k} is over {cap} characters")
+    if notes.get("score") is not None:
+        out += score_problems(notes["score"])
+    return out
 MOVER_BATCH = 50
 
 
@@ -118,7 +161,7 @@ def mover_problems(m: object) -> list[str]:
             out.append(f"missing {k}")
     mid = m.get("id")
     if isinstance(mid, str) and (not MOVER_ID.match(mid) or mid in RESERVED_MOVER_IDS):
-        out.append(f"id {mid!r} must be a lowercase slug (a-z, 0-9, -), 2-60 characters, not unlock/lock")
+        out.append(f"id {mid!r} must be a lowercase slug (a-z, 0-9, -), 2-60 characters, not unlock/lock/updates")
     if m.get("kind") is not None and m.get("kind") not in MOVER_KINDS:
         out.append(f"kind must be one of {sorted(MOVER_KINDS)}")
     if isinstance(m.get("one_liner"), str) and len(m["one_liner"]) > 200:
@@ -127,6 +170,8 @@ def mover_problems(m: object) -> list[str]:
         out.append("summary is over 800 characters")
     if m.get("claim_status", "reported") not in ("confirmed", "reported", "unverified"):
         out.append("claim_status must be confirmed, reported or unverified")
+    if m.get("status") is not None and m["status"] not in MOVER_STATUSES:
+        out.append("status must be proposed, watching or archived (leave it out: a new mover is proposed)")
     traction = m.get("traction") or []
     if not isinstance(traction, list) or len(traction) > 8:
         out.append("traction must be a list of at most 8 lines")
@@ -147,16 +192,8 @@ def mover_problems(m: object) -> list[str]:
     markets = m.get("markets_live") or []
     if not isinstance(markets, list) or len(markets) > 8:
         out.append("markets_live must be a list of at most 8")
-    notes = m.get("notes")
-    if notes is not None:
-        if not isinstance(notes, dict):
-            out.append("notes must be an object with take / learn / localize")
-        else:
-            if set(notes) - set(NOTE_FIELDS):
-                out.append(f"notes has unknown fields {sorted(set(notes) - set(NOTE_FIELDS))}")
-            for k, cap in NOTE_FIELDS.items():
-                if isinstance(notes.get(k), str) and len(notes[k]) > cap:
-                    out.append(f"notes.{k} is over {cap} characters")
+    if m.get("notes") is not None:
+        out += notes_problems(m["notes"])
     urls = m.get("item_urls") or []
     if not isinstance(urls, list) or len(urls) > 50:
         out.append("item_urls must be a list of at most 50 story URLs")
@@ -178,8 +215,15 @@ def load_movers(path: Path) -> list[dict]:
 
 
 def note_texts(movers: list[dict]) -> list[str]:
-    """Every private note string in the file, for the leak check."""
-    return [v for m in movers for v in (m.get("notes") or {}).values() if isinstance(v, str) and v.strip()]
+    """Every private note string in the file (and a score's verdict), for the leak check."""
+    out = []
+    for m in movers:
+        notes = m.get("notes") or {}
+        out += [v for v in notes.values() if isinstance(v, str) and v.strip()]
+        verdict = (notes.get("score") or {}).get("verdict") if isinstance(notes.get("score"), dict) else None
+        if isinstance(verdict, str) and verdict.strip():
+            out.append(verdict)
+    return out
 
 
 def leaked(page: str, secrets_: list[str]) -> list[str]:
@@ -293,7 +337,36 @@ def cmd_archive(argv: list[str]) -> None:
     sys.exit(0 if status == 200 else 1)
 
 
-SUBCOMMANDS = {"movers": cmd_movers, "link": cmd_link, "archive": cmd_archive}
+def cmd_notes(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py notes",
+                                 description="Update only a mover's take or score (e.g. after office hours), from a JSON file.")
+    ap.add_argument("mover_id")
+    ap.add_argument("file", type=Path, help='{"score": {...}} and/or take / learn / localize')
+    args = ap.parse_args(argv)
+    if not MOVER_ID.match(args.mover_id):
+        ap.error("mover_id must be a mover's id (see: ingest.py movers --list)")
+    notes = json.loads(args.file.read_text())
+    if problems := notes_problems(notes) or ([] if notes else ["the file is empty"]):
+        sys.exit("notes file has problems:\n  " + "\n  ".join(problems))
+    base, token = connection()
+    status, res = call("POST", f"{base}/api/ingest/movers/{args.mover_id}/notes", token, notes)
+    print(json.dumps(res, indent=1) if status == 200 else f"could not update notes: HTTP {status} {res}")
+    sys.exit(0 if status == 200 else 1)
+
+
+def cmd_feedback(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py feedback",
+                                 description="What the founders thought of each mover: votes with reasons, stage, status, score. "
+                                             "Read it before proposing more.")
+    ap.parse_args(argv)
+    base, token = connection()
+    status, res = call("GET", f"{base}/api/ingest/movers/feedback", token)
+    if status != 200:
+        sys.exit(f"could not read feedback: HTTP {status} {res}")
+    print(json.dumps(res, indent=1, ensure_ascii=False))
+
+
+SUBCOMMANDS = {"movers": cmd_movers, "link": cmd_link, "archive": cmd_archive, "notes": cmd_notes, "feedback": cmd_feedback}
 
 
 def main() -> None:

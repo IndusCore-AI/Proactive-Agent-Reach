@@ -122,7 +122,18 @@ anything failed.
 ## Movers to watch
 
 `https://induscore.site/sv/movers` lists companies, apps and skills gaining traction, kept apart from the
-daily news. **Add or change a mover only when a founder asks you to.** The daily run never creates one.
+daily news. Behind the founders' unlock the same page is their **desk**: a queue of proposed movers, each with
+an office-hours score, votes (with reasons), a stage (new, researching, building, passed) and copyable next
+steps (an REA prompt, a build brief, a scoring prompt).
+
+**A run may propose movers; only a founder publishes.** A mover sent without `status` is `proposed`: it waits
+in the desk's queue and appears on no public page, feed, sitemap or story until a founder publishes it there.
+Send `"status": "watching"` only when a founder told you to put it straight on the list. The daily run does
+not propose movers unless a founder asked for proposals in that run.
+
+**Before proposing**, read what the founders thought of the last ones:
+`python3 -I scripts/ingest.py feedback`. Propose more like the upvoted ones and the ones in "researching" or
+"building"; none like the passed or downvoted ones; read every vote's reason and follow it.
 
 **In the daily run**, after step 4: `python3 -I scripts/ingest.py movers --list` prints the existing movers.
 When a story you just published is clearly about one of them (the company raised, the app launched in a new
@@ -130,7 +141,7 @@ market, the skill shipped a release), link it:
 `python3 -I scripts/ingest.py link <mover-id> <story-url> [<story-url> ...]`. Link only clear matches; a
 passing mention is not one. Missing stories are reported, never created.
 
-**When a founder asks to add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
+**When a founder asks to propose, add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
 (never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py movers <file.json>`:
 
 ```json
@@ -141,7 +152,9 @@ passing mention is not one. Missing stories are reported, never created.
   "traction": [{"label": "Restaurants live", "value": "120", "source_url": "https://example.com/blog/120", "as_of": "2026-10-01"}],
   "markets_live": ["US", "UK"], "claim_status": "confirmed", "tags": ["robotics"],
   "image_url": "https://example.com/logo.png", "image_kind": "logo",
-  "notes": {"take": "How it helps us", "learn": "What to learn", "localize": "Where to localize"},
+  "notes": {"take": "How it helps us", "learn": "What to learn", "localize": "Where to localize",
+            "score": {"lines": {"demand": 10, "problem": 6, "fit": 9, "wedge": 6, "market": 6, "future": 9, "moat": 4, "whitespace": 3},
+                      "market": "The named target market", "verdict": "One line: in or out, and why."}},
   "item_urls": ["https://techcrunch.com/..."]
 }]}
 ```
@@ -150,10 +163,17 @@ passing mention is not one. Missing stories are reported, never created.
   line needs a `source_url` (https) you actually opened and the date the figure was true; no source, no line
   (at most 8). `claim_status` is `confirmed` (the company states it), `reported` or `unverified`.
 - `notes` is the founders' **private** take; it is shown only after the founders' unlock and never in public
-  HTML, the sitemap, RSS, llms.txt or JSON-LD. Write it only from what the founder told you. Leaving a note
-  field out keeps what is stored; `null` clears it.
+  HTML, the sitemap, RSS, llms.txt or JSON-LD. Write it only from what the founder told you or from research
+  you did and cited. Leaving a note field out keeps what is stored; `null` clears it.
+- `notes.score` is the office-hours rubric (teamctx k:878, unchanged) for the **localized** idea in one named
+  market: the eight lines with their maximums (demand 25, problem 10, fit 15, wedge 10, market 10, future 15,
+  moat 10, whitespace 5); the server adds up the total. Under 40 is below the cutoff: say so in the verdict.
+- To change only the take or the score later (after an office-hours run, say), put
+  `{"score": {...}}` (and/or take / learn / localize) in a file and run
+  `python3 -I scripts/ingest.py notes <mover-id> <file.json>`; the public facts stay as they are.
 - Reruns update by `id`. The script checks the file first, then verifies every mover is stored and that its
-  public page shows the name and **none** of the note text; exit code 0 means both passed.
+  public page (for movers on the list) shows the name and **none** of the note text; exit code 0 means both
+  passed. Proposed movers have no public page to check.
 - `python3 -I scripts/ingest.py archive <mover-id>` stops watching one (it leaves the site; the founder can
   restore it by sending it again with `"status": "watching"`).
 
