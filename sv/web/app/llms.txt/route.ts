@@ -23,6 +23,7 @@ How to use and cite it:
 - [Today's edition](${abs('/')})
 - [Archive of every edition](${abs('/archive')})
 - [Topics](${abs('/topics')})
+- [Movers to watch: companies, apps and skills gaining traction, each traction figure linked to its source and dated](${abs('/movers')})
 - [How the feed is made: sources, ranking, what is and is not stored](${abs('/about')})
 - [RSS feed of the latest edition](${abs('/feed.xml')})
 - [Sitemap](${abs('/sitemap.xml')})

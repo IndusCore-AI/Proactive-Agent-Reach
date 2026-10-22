@@ -12,6 +12,7 @@ const NAV = [
   { href: '/', label: 'Today', key: 'today' },
   { href: '/archive', label: 'Archive', key: 'archive' },
   { href: '/topics', label: 'Topics', key: 'topics' },
+  { href: '/movers', label: 'Movers', key: 'movers' },
   { href: '/search', label: 'Search', key: 'search' },
   { href: '/about', label: 'About', key: 'about' },
 ];
@@ -51,6 +52,7 @@ export function Footer() {
           <HomeLink>Today</HomeLink>
           <Link href="/archive">Archive</Link>
           <Link href="/topics">Topics</Link>
+          <Link href="/movers">Movers to watch</Link>
           <Link href="/about">How this feed is made</Link>
           <a href="/sv/feed.xml">RSS</a>
           <a href="https://induscore.site">IndusCore</a>
