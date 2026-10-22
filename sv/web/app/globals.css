@@ -430,7 +430,8 @@ img, svg { display: block; max-width: 100%; }
 }
 .take-kicker span { color: var(--ink-3); font-weight: 600; letter-spacing: 0.04em; }
 .take-kicker span::before { content: "· "; }
-.take dl { margin: 0; display: grid; gap: 10px; }
+/* Stacked, never the two-column .detail dl grid it sits inside on a mover page. */
+.take dl, .detail .take dl { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .take dt { font-size: 0.75rem; font-weight: 650; color: var(--ink-2); margin: 0 0 1px; }
 .take dd { margin: 0; font-size: 0.875rem; line-height: 1.5; color: var(--ink); white-space: pre-line; max-width: var(--measure); }
 .take-empty { margin: 0; font-size: 0.8125rem; color: var(--ink-3); }
@@ -438,19 +439,22 @@ img, svg { display: block; max-width: 100%; }
 .mover-detail .take dd { font-size: 0.9375rem; }
 
 .founders {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px 0 12px; margin: 0;
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 3px 0 12px; margin: 0;
   border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 0.8125rem; color: var(--ink-2);
   justify-self: start; align-self: flex-start;
 }
 .founders-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink); }
 .founders-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c-funding); }
 .founders-lock {
-  height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2);
+  height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2);
   font: 500 0.8125rem/1 var(--font); cursor: pointer; transition: background-color 120ms ease-out;
 }
 .founders-lock:hover { background: var(--sunk); color: var(--ink); }
 .founders-lock:active { transform: scale(0.97); }
 .lock-form { display: inline; margin: 0; }
+/* Press feedback on every link in a mover card, on pointer-down, no delay.
+   Opacity only, so it stays under reduced motion. */
+.mover a:active, .traction a:active, .t-more:active { opacity: 0.6; transition: none; }
 .mover-chips { margin: 2px 0 0; }
 
 .unlock { padding: 36px 0 64px; max-width: 560px; }
