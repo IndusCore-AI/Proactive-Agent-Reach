@@ -212,3 +212,163 @@ def test_configured_reddit_groups():
         assert wanted in subs
     assert len(subs) == len(set(subs)) and len(groups) <= 4   # few requests: one per group
     assert all(g["claim"] == "unverified" for g in groups)
+
+
+# ---------------------------------------------------------------- App Store chart movers
+
+import charts  # noqa: E402
+
+
+def test_apple_chart_parser():
+    chart = charts.parse_chart(fixture("apple_chart_us_top_free.json"))
+    assert chart["country"] == "us" and chart["updated"].startswith("Thu, 22 Oct 2026")
+    assert [(a["id"], a["rank"]) for a in chart["apps"]] == [("407558537", 1), ("632064380", 2), ("6448311069", 4)]
+    assert chart["apps"][2] == {"id": "6448311069", "name": "Example AI Chat", "artist": "Example AI Inc.",
+                                "url": "https://apps.apple.com/us/app/example-ai-chat/id6448311069", "released": "2026-09-30", "rank": 4}
+    for bad in (b"<html>", b'{"feed": {}}', b'{"feed": {"results": []}}'):
+        with pytest.raises(ValueError):
+            charts.parse_chart(bad)
+
+
+def chart(country: str, chart_: str, ranked: list[str]) -> dict:
+    """A loaded feed: app ids in rank order (None leaves a gap)."""
+    return {"url": charts.FEED.format(country=country, chart=chart_),
+            "apps": [{"id": i, "name": f"App {i}", "artist": f"Maker {i}", "url": f"https://apps.apple.com/{country}/app/id{i}",
+                      "released": None, "rank": r} for r, i in enumerate(ranked, 1) if i]}
+
+
+def snap(day: str, feeds: dict[str, list[str]], failed: tuple[str, ...] = ()) -> dict:
+    out = {k: chart(*k.split("/"), v) for k, v in feeds.items()}
+    out.update({k: {"url": charts.FEED.format(country=k.split("/")[0], chart=k.split("/")[1]), "error": "HTTP 503"} for k in failed})
+    return {"date": day, "feeds": out}
+
+
+def filler(n: int, prefix: str) -> list[str]:
+    return [f"{prefix}{i}" for i in range(n)]
+
+
+CFG = {"countries": ["us", "in", "gb", "de", "id", "sg", "my"], "charts": ["top-free"]}
+
+
+def test_rising_new_and_up_25_places():
+    before = snap("2026-10-21", {"us/top-free": ["a", "b"] + filler(40, "x") + ["late"] + filler(57, "y")})
+    # "late" was 43rd and is now 10th (up 33); "b" slipped; "fresh" is new; "a" moved only 1 place
+    after = snap("2026-10-22", {"us/top-free": ["b", "a"] + filler(7, "x") + ["late", "fresh"] + filler(30, "x")[9:]})
+    doc = charts.compute_movers(after, before, CFG)
+    moves = {e["app_id"]: e["moves"][0] for e in doc["rising"]}
+    assert set(moves) == {"late", "fresh"}
+    assert moves["late"] == {"country": "us", "rank": 10, "previous_rank": 43, "places_up": 33, "date": "2026-10-22",
+                             "previous_date": "2026-10-21", "source": charts.FEED.format(country="us", chart="top-free")}
+    assert moves["fresh"]["previous_rank"] is None and moves["fresh"]["places_up"] is None
+    assert doc["previous_date"] == "2026-10-21"
+
+
+def test_rising_groups_countries_and_skips_feeds_missing_before():
+    before = snap("2026-10-21", {"us/top-free": filler(100, "u"), "gb/top-free": filler(100, "g")})
+    after = snap("2026-10-22", {"us/top-free": ["hit"] + filler(99, "u"), "gb/top-free": ["hit"] + filler(99, "g"),
+                                "de/top-free": ["hit"] + filler(99, "d")})
+    doc = charts.compute_movers(after, before, CFG)
+    hit = doc["rising"][0]
+    assert hit["app_id"] == "hit" and [m["country"] for m in hit["moves"]] == ["gb", "us"]
+    assert any("de/top-free: no list in the previous snapshot" in n for n in doc["notes"])
+
+
+def test_first_run_says_so_and_still_lists_cross_country():
+    first = snap("2026-10-22", {"us/top-free": filler(100, "u"), "in/top-free": filler(100, "i")})
+    doc = charts.compute_movers(first, None, CFG)
+    assert doc["rising"] == [] and doc["previous_date"] is None
+    assert any(n.startswith("No previous snapshot: this is the first run") for n in doc["notes"])
+    assert "works_abroad_not_in_us" in doc and "us_hits_missing_in_india_sea" in doc
+
+
+def test_works_abroad_but_not_in_the_us():
+    feeds = {
+        "us/top-free": ["global"] + filler(99, "u"),
+        "gb/top-free": ["abroad", "global", "two"] + filler(97, "g"),
+        "de/top-free": filler(10, "d") + ["abroad"] + filler(30, "d")[10:] + ["two"] + filler(60, "dd"),
+        "in/top-free": filler(49, "i") + ["abroad", "two"] + filler(49, "i")[1:],   # 50th: still top 50
+        "id/top-free": filler(100, "n"),
+    }
+    doc = charts.compute_movers(snap("2026-10-22", feeds), None, CFG)
+    abroad = {e["app_id"]: e for e in doc["works_abroad_not_in_us"]}
+    assert set(abroad) == {"abroad"}            # "two" is top 50 in only two countries; "global" charts in the US
+    e = abroad["abroad"]
+    assert [(t["country"], t["rank"]) for t in e["top_in"]] == [("de", 11), ("gb", 1), ("in", 50)]
+    assert e["us_rank"] is None and e["us_checked"] == [charts.FEED.format(country="us", chart="top-free")]
+    assert all(t["source"].startswith("https://rss.marketingtools.apple.com/api/v2/") for t in e["top_in"])
+
+
+def test_us_paid_chart_counts_as_charting_in_the_us():
+    feeds = {"us/top-free": filler(100, "u"), "us/top-paid": ["abroad"],
+             "gb/top-free": ["abroad"], "de/top-free": ["abroad"], "in/top-free": ["abroad"]}
+    doc = charts.compute_movers(snap("2026-10-22", feeds), None, {**CFG, "charts": ["top-free", "top-paid"]})
+    assert doc["works_abroad_not_in_us"] == []
+
+
+def test_us_hits_missing_in_india_and_southeast_asia():
+    feeds = {
+        "us/top-free": ["everywhere", "us-only", "in-only"] + filler(47, "u") + ["us-51st"],
+        "in/top-free": ["everywhere", "in-only"] + filler(98, "i"),
+        "id/top-free": ["everywhere"] + filler(99, "n"),
+        "sg/top-free": filler(100, "s"),
+        "my/top-free": filler(100, "m"),
+    }
+    doc = charts.compute_movers(snap("2026-10-22", feeds), None, CFG)
+    gaps = doc["us_hits_missing_in_india_sea"]
+    assert [g["app_id"] for g in gaps][:1] == ["us-only"]
+    assert "everywhere" not in {g["app_id"] for g in gaps} and "in-only" not in {g["app_id"] for g in gaps}
+    assert "us-51st" not in {g["app_id"] for g in gaps}   # only the US top 50
+    g = gaps[0]
+    assert g["us_rank"] == 2 and g["missing_in"] == ["in", "id", "sg", "my"] and len(g["checked"]) == 4
+
+
+def test_failed_feeds_are_noted_and_lists_skipped_when_needed():
+    feeds = {"in/top-free": filler(100, "i"), "gb/top-free": ["x"], "de/top-free": ["x"], "id/top-free": ["x"]}
+    doc = charts.compute_movers(snap("2026-10-22", feeds, failed=("us/top-free",)), None, CFG)
+    assert doc["works_abroad_not_in_us"] == [] and doc["us_hits_missing_in_india_sea"] == []
+    assert any("us/top-free" in n for n in doc["notes"]) and any("No US chart loaded" in n for n in doc["notes"])
+
+
+def test_run_keeps_dated_snapshots_and_compares_with_the_day_before(tmp_path):
+    from datetime import date as d
+
+    ids = [str(100000 + i) for i in range(101)]   # Apple app ids are digits
+    day1 = {"us": ids[:100], "in": ids[:100]}
+    day2 = {"us": [ids[100]] + ids[:99], "in": ids[:100]}   # one new app in the US
+    now = {"lists": day1}
+
+    def fetcher(url, **kw):
+        country = url.split("/v2/")[1].split("/")[0]
+        return json.dumps({"feed": {"country": country, "updated": "x", "results": [
+            {"id": i, "name": f"App {i}", "artistName": "m", "url": f"https://apps.apple.com/{country}/app/id{i}"}
+            for i in now["lists"][country]]}}).encode()
+
+    cfg = {"countries": ["us", "in"], "charts": ["top-free"]}
+    state, out = tmp_path / "state", tmp_path / "run"
+    st = charts.run(out, fetcher, cfg, state, today=d(2026, 10, 21))
+    assert st["previous"] is None and st["ok"] == 2 and (state / "charts" / "2026-10-21.json").exists()
+    first = json.loads((out / "chart-movers.json").read_text())
+    assert first["previous"] is None and first["rising"] == [] and "first run" in first["notes"][0]
+    assert first["snapshot"] == {"date": "2026-10-21", "file": str(state / "charts" / "2026-10-21.json"), "feeds_ok": 2,
+                                 "feeds": 2, "failed": {}}
+    now["lists"] = day2
+    st = charts.run(out, fetcher, cfg, state, today=d(2026, 10, 22))
+    doc = json.loads((out / "chart-movers.json").read_text())
+    assert st["previous"] == "2026-10-21" and doc["previous"]["date"] == "2026-10-21"
+    assert [e["app_id"] for e in doc["rising"]] == [ids[100]]
+    # a rerun on the same day still compares with the day before, not with itself
+    st = charts.run(out, fetcher, cfg, state, today=d(2026, 10, 22))
+    assert st["previous"] == "2026-10-21" and st["rising"] == 1
+    # snapshots older than keep_days are pruned
+    (state / "charts" / "2026-01-01.json").write_text("{}")
+    charts.run(out, fetcher, cfg, state, today=d(2026, 10, 22))
+    assert not (state / "charts" / "2026-01-01.json").exists()
+    assert "summary" not in doc and charts.summary_line(st).startswith("chart movers: 2/2 feeds; rising 1 (vs 2026-10-21)")
+
+
+def test_state_dir_follows_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("KEEPING_UP_SV_STATE", str(tmp_path / "x"))
+    assert charts.state_dir() == tmp_path / "x"
+    monkeypatch.delenv("KEEPING_UP_SV_STATE")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    assert charts.state_dir() == tmp_path / "xdg" / "keeping-up-sv"

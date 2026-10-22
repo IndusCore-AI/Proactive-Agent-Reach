@@ -1,5 +1,37 @@
 {
   "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). reddit: subreddits are read together as one public RSS feed of the day's top posts (one request per source, paced by Reddit's rate-limit headers; see RedditFetcher in collect.py). enabled:false skips a source (disabled_reason says why).",
+  "_doc_charts": "App Store chart movers (scripts/charts.py), run by collect.py after the sources. countries and charts: Apple's public top-100 feeds read each run; the thresholds are the three lists' rules. Snapshots stay in the local state directory, never in the repo.",
+  "charts": {
+    "countries": [
+      "us",
+      "in",
+      "gb",
+      "es",
+      "id",
+      "au",
+      "br",
+      "de",
+      "sg",
+      "my",
+      "ae",
+      "sa"
+    ],
+    "charts": [
+      "top-free",
+      "top-paid"
+    ],
+    "rise_places": 25,
+    "abroad_top": 50,
+    "abroad_min_countries": 3,
+    "home_top": 50,
+    "localize_in": [
+      "in",
+      "id",
+      "sg",
+      "my"
+    ],
+    "keep_days": 90
+  },
   "sources": [
     {
       "id": "hackernews",

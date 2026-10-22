@@ -9,6 +9,8 @@ across sources, pre-scores, and writes:
 
   DIR/candidates.json   ranked candidates for Claude Code to curate
   DIR/sources.json      per-source status: ok, fetched, in window, error
+  DIR/chart-movers.json App Store chart movers (charts.py): candidates for
+                        proposed movers, never news items (--no-charts skips)
 
 A failing source is recorded and skipped; the run carries on. Standard
 library only, so it runs on any laptop with Python 3.10+.
@@ -798,7 +800,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", help="edition date YYYY-MM-DD (default: today in Pacific time)")
     ap.add_argument("--out", help="output directory (default: <tmp>/keeping-up-sv/<date>)")
-    ap.add_argument("--only", help="comma-separated source ids to run")
+    ap.add_argument("--only", help="comma-separated source ids to run (add 'charts' to include the chart movers)")
+    ap.add_argument("--no-charts", action="store_true", help="skip the App Store chart movers")
     args = ap.parse_args()
 
     today = svlib.today_pt()
@@ -809,7 +812,8 @@ def main() -> None:
     out = Path(args.out) if args.out else Path(tempfile.gettempdir()) / "keeping-up-sv" / day.isoformat()
     out.mkdir(parents=True, exist_ok=True)
 
-    sources = [s for s in json.loads((SKILL_DIR / "sources.json").read_text())["sources"] if s.get("enabled", True)]
+    config = json.loads((SKILL_DIR / "sources.json").read_text())
+    sources = [s for s in config["sources"] if s.get("enabled", True)]
     if args.only:
         wanted = set(args.only.split(","))
         sources = [s for s in sources if s["id"] in wanted]
@@ -831,6 +835,14 @@ def main() -> None:
     for s in statuses:
         print(f"  {'ok ' if s['ok'] else 'ERR'} {s['source']:<22} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
     print(f"wrote {out / 'candidates.json'}")
+
+    if not args.no_charts and (not args.only or "charts" in args.only.split(",")):
+        import charts  # noqa: E402  (imported here: charts.py borrows fetch from this module)
+
+        try:
+            print(charts.summary_line(charts.run(out, fetch, config.get("charts"), today=today)))
+        except Exception as e:  # the edition never depends on the charts
+            print(f"chart movers: failed ({type(e).__name__}: {e}); the edition is not affected")
 
 
 if __name__ == "__main__":
