@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCexampleexampleexample0"/>
+ <id>yt:channel:exampleexampleexample0</id>
+ <yt:channelId>exampleexampleexample0</yt:channelId>
+ <title>Example Founders</title>
+ <author><name>Example Founders</name><uri>https://www.youtube.com/channel/UCexampleexampleexample0</uri></author>
+ <entry>
+  <id>yt:video:AbCdEfGhIj0</id>
+  <yt:videoId>AbCdEfGhIj0</yt:videoId>
+  <yt:channelId>UCexampleexampleexample0</yt:channelId>
+  <title>How we grew an AI note-taker to $40k MRR in six months</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=AbCdEfGhIj0"/>
+  <author><name>Example Founders</name><uri>https://www.youtube.com/channel/UCexampleexampleexample0</uri></author>
+  <published>2026-10-21T15:00:16+00:00</published>
+  <updated>2026-10-21T16:00:00+00:00</updated>
+  <media:group>
+   <media:title>How we grew an AI note-taker to $40k MRR in six months</media:title>
+   <media:content url="https://www.youtube.com/v/AbCdEfGhIj0?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+   <media:thumbnail url="https://i1.ytimg.com/vi/AbCdEfGhIj0/hqdefault.jpg" width="480" height="360"/>
+   <media:description>The founder of an AI note-taking startup walks through pricing, the first 100 customers and what did not work.</media:description>
+   <media:community>
+    <media:starRating count="1200" average="5.00" min="1" max="5"/>
+    <media:statistics views="48210"/>
+   </media:community>
+  </media:group>
+ </entry>
+ <entry>
+  <id>yt:video:ShOrTcLiP01</id>
+  <yt:videoId>ShOrTcLiP01</yt:videoId>
+  <yt:channelId>UCexampleexampleexample0</yt:channelId>
+  <title>The one pricing mistake every AI startup makes</title>
+  <link rel="alternate" href="https://www.youtube.com/shorts/ShOrTcLiP01"/>
+  <author><name>Example Founders</name><uri>https://www.youtube.com/channel/UCexampleexampleexample0</uri></author>
+  <published>2026-10-21T18:00:00+00:00</published>
+  <media:group>
+   <media:title>The one pricing mistake every AI startup makes</media:title>
+   <media:thumbnail url="http://i2.ytimg.com/vi/ShOrTcLiP01/hqdefault.jpg" width="480" height="360"/>
+   <media:description>A clip from the full episode.</media:description>
+   <media:community><media:statistics views="900"/></media:community>
+  </media:group>
+ </entry>
+ <entry>
+  <id>yt:video:OldVideo0001</id>
+  <yt:videoId>OldVideo001</yt:videoId>
+  <yt:channelId>UCexampleexampleexample0</yt:channelId>
+  <title>An episode from last year about startups</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=OldVideo001"/>
+  <published>2025-01-02T10:00:00+00:00</published>
+ </entry>
+ <entry>
+  <id>yt:video:bad</id>
+  <yt:videoId>not a video id</yt:videoId>
+  <title>Broken entry</title>
+  <published>2026-10-21T18:00:00+00:00</published>
+ </entry>
+</feed>

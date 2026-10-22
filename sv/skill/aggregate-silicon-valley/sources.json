@@ -1,5 +1,5 @@
 {
-  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit. enabled:false skips a source (disabled_reason says why).",
+  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). enabled:false skips a source (disabled_reason says why).",
   "sources": [
     {
       "id": "hackernews",
@@ -286,6 +286,129 @@
       "filter": false,
       "category": "discussion",
       "claim": "unverified"
+    },
+    {
+      "id": "yt-ycombinator",
+      "name": "Y Combinator (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UCcefcZRL2oaA_uBNeo5UOWg",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "yc"
+      ]
+    },
+    {
+      "id": "yt-a16z",
+      "name": "a16z (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UC9cn0TuPq4dnbTY-CBsm8XA",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "vc"
+      ]
+    },
+    {
+      "id": "yt-lennys-podcast",
+      "name": "Lenny's Podcast",
+      "kind": "youtube",
+      "channel_id": "UC6t1O76G0jYXOAoYCm153dA",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-greg-isenberg",
+      "name": "Greg Isenberg",
+      "kind": "youtube",
+      "channel_id": "UCPjNBjflYl0-HQtUvOx0Ibw",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-starter-story",
+      "name": "Starter Story",
+      "kind": "youtube",
+      "channel_id": "UChhw6DlKKTQ9mYSpTfXUYqA",
+      "weight": 9,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified",
+      "shorts": true
+    },
+    {
+      "id": "yt-my-first-million",
+      "name": "My First Million",
+      "kind": "youtube",
+      "channel_id": "UCyaN6mg5u8Cjy2ZI4ikWaug",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-all-in",
+      "name": "All-In Podcast",
+      "kind": "youtube",
+      "channel_id": "UCESLZhusAkFfsNsApnjF_Cg",
+      "weight": 11,
+      "filter": true,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-latent-space",
+      "name": "Latent Space (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UCxBcwypKK-W3GHd_RZ9FZrQ",
+      "weight": 11,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "yt-every",
+      "name": "Every: AI & I",
+      "kind": "youtube",
+      "channel_id": "UCjIMtrzxYc0lblGhmOgC_CA",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "yt-guigu101",
+      "name": "硅谷101 (Silicon Valley 101)",
+      "kind": "youtube",
+      "channel_id": "UCKV2yWPB3wn0RTZh3cTD8YA",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-think-school",
+      "name": "Think School (India)",
+      "kind": "youtube",
+      "channel_id": "UCKZozRVHRYsYHGEyNKuhhdA",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
     }
   ]
 }

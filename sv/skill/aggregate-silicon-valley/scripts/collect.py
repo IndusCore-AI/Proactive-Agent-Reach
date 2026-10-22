@@ -45,6 +45,7 @@ NS = {
     "dc": "http://purl.org/dc/elements/1.1/",
     "content": "http://purl.org/rss/1.0/modules/content/",
     "media": "http://search.yahoo.com/mrss/",
+    "yt": "http://www.youtube.com/xml/schemas/2015",
 }
 
 # ---------------------------------------------------------------- fetching
@@ -259,6 +260,55 @@ def parse_feed(raw: bytes) -> list[dict]:
     return out
 
 
+YT_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
+_YT_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _int(s: str | None) -> int | None:
+    try:
+        return int(s) if s not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def parse_youtube_feed(raw: bytes) -> list[dict]:
+    """A YouTube channel's public Atom feed (the latest ~15 uploads) as
+    {video_id, url, title, published, description, channel, views, likes,
+    thumbnail, short}. The URL is always the watch page, so the same video
+    found by another source merges with it and the site embeds it."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise SourceError(f"feed is not valid XML ({e})")
+    if not root.tag.endswith("feed"):
+        raise SourceError("not a YouTube channel feed")
+    out = []
+    for it in root.iter(f"{{{NS['atom']}}}entry"):
+        vid = _text(it.find("yt:videoId", NS))
+        if not _YT_VIDEO_ID.match(vid):
+            continue
+        link = next((ln.get("href", "") for ln in it.findall("atom:link", NS) if ln.get("rel", "alternate") == "alternate"), "")
+        group = it.find("media:group", NS)
+        desc = _text(group.find("media:description", NS)) if group is not None else ""
+        thumb = group.find("media:thumbnail", NS) if group is not None else None
+        stats = group.find("media:community/media:statistics", NS) if group is not None else None
+        rating = group.find("media:community/media:starRating", NS) if group is not None else None
+        thumb_url = (thumb.get("url", "") if thumb is not None else "").replace("http://", "https://", 1)
+        out.append({
+            "video_id": vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "title": _text(it.find("atom:title", NS)),
+            "published": parse_date(_text(it.find("atom:published", NS))),
+            "description": desc,
+            "channel": _text(it.find("atom:author/atom:name", NS)),
+            "views": _int(stats.get("views")) if stats is not None else None,
+            "likes": _int(rating.get("count")) if rating is not None else None,
+            "thumbnail": thumb_url if thumb_url.startswith("https://") else None,
+            "short": "/shorts/" in link,
+        })
+    return out
+
+
 # ---------------------------------------------------------------- classification
 
 RELEVANT = re.compile(
@@ -269,6 +319,12 @@ RELEVANT = re.compile(
     r"y ?combinator|yc|saas|developers?|api|sdk|robots?|robotics|humanoid|autonomous|self-driving|fintech|"
     r"stablecoin|crypto|data ?cent(er|re)s?|semiconductor|tsmc|quantum|cybersecurity|breach|antitrust|"
     r"show hn|launch hn|ask hn)\b", re.I)
+# Chinese has no word boundaries between characters and Latin letters, so the
+# Chinese sources (硅谷101, 小红书) need their own list.
+RELEVANT_ZH = re.compile(
+    r"([一-鿿]\s?AI(?![A-Za-z])|(?<![A-Za-z])AI\s?[一-鿿]|"
+    r"创业|创始人|融资|估值|投资|出海|上市|收购|发布|模型|智能体|机器人|芯片|算力|独立开发|副业|工具|产品|"
+    r"硅谷|科技|开源|应用|电商)")
 
 CATEGORY_RULES = [
     ("acquisition", re.compile(r"\b(acquires?|acquired|acquisition|acqui-?hires?|to buy|buys|agrees to buy|merger|merges|takeover)\b", re.I)),
@@ -369,7 +425,7 @@ def candidate(src: dict, *, url: str, title: str, published: datetime | None, te
         "image_url": image_url if image_url and image_url.startswith("https://") else None,
         "image_kind": image_kind if image_url else None,
         "weight": src["weight"],
-        "relevant": bool(RELEVANT.search(blob)),
+        "relevant": bool(RELEVANT.search(blob) or RELEVANT_ZH.search(blob)),
         **({"extra": extra} if extra else {}),
     }
 
@@ -486,6 +542,27 @@ def collect_yc(src: dict, start: datetime, end: datetime) -> tuple[list[dict], i
     return out, fetched
 
 
+def collect_youtube(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
+    """One channel's public upload feed (no key). Shorts are dropped unless the
+    source keeps them ("shorts": true): on interview channels they are clips of
+    a full episode. Views and likes are the counts YouTube shows at collection."""
+    entries = parse_youtube_feed(fetch(YT_FEED.format(src["channel_id"])))
+    out = []
+    for e in entries:
+        if not e["published"] or not (start <= e["published"] <= end):
+            continue
+        if e["short"] and not src.get("shorts"):
+            continue
+        engagement = {k: e[k] for k in ("views", "likes") if e[k] is not None}
+        c = candidate(src, url=e["url"], title=e["title"], published=e["published"], text=e["description"],
+                      author=e["channel"], source_name=src.get("channel_name") or e["channel"] or src["name"],
+                      engagement=engagement, image_url=e["thumbnail"],
+                      extra={"video_id": e["video_id"], "short": e["short"], "channel_id": src["channel_id"]})
+        if c:
+            out.append(c)
+    return out, len(entries)
+
+
 def collect_reddit(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
     entries = parse_feed(fetch(src["url"], tries=2))
     out = []
@@ -514,6 +591,9 @@ def prescore(c: dict, end: datetime) -> dict:
         engagement = 35 * min(1.0, math.log10(1 + eng["points"] + 0.5 * eng.get("comments", 0)) / math.log10(1 + 900))
     elif "votes" in eng:
         engagement = 35 * min(1.0, math.log10(1 + eng["votes"]) / math.log10(1 + 120))
+    elif "views" in eng:
+        # a video: 250k views inside the 48-hour window is as strong as a 900-point HN story
+        engagement = 35 * min(1.0, math.log10(1 + eng["views"]) / math.log10(1 + 250_000))
     else:
         engagement = 12.0  # an editor (the publication) already chose it
     kind = {"funding": 10, "acquisition": 10, "launch": 6, "analysis": 2}.get(c["category"], 0)
@@ -575,6 +655,8 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
             cands, fetched = collect_yc(src, start, end)
         elif src["kind"] == "reddit":
             cands, fetched = collect_reddit(src, start, end)
+        elif src["kind"] == "youtube":
+            cands, fetched = collect_youtube(src, start, end)
         else:
             raise SourceError(f"unknown kind {src['kind']}")
         if src.get("filter"):
@@ -620,7 +702,7 @@ def main() -> None:
     print(f"edition {day}  window {start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M} UTC")
     print(f"sources ok {ok}/{len(statuses)}; candidates {len(cands)} (after merging duplicates)")
     for s in statuses:
-        print(f"  {'ok ' if s['ok'] else 'ERR'} {s['source']:<18} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
+        print(f"  {'ok ' if s['ok'] else 'ERR'} {s['source']:<22} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
     print(f"wrote {out / 'candidates.json'}")
 
 
