@@ -1,5 +1,5 @@
 {
-  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). reddit: subreddits are read together as one public RSS feed of the day's top posts (one request per source, paced by Reddit's rate-limit headers; see RedditFetcher in collect.py). enabled:false skips a source (disabled_reason says why).",
+  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube, login. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). reddit: subreddits are read together as one public RSS feed of the day's top posts (one request per source, paced by Reddit's rate-limit headers; see RedditFetcher in collect.py). login: optional search on a platform with no public feed (platform xiaohongshu or twitter) through your own logged-in Chrome via agent-reach's OpenCLI bridge; it runs only when agent-reach doctor reports the channel usable (or with collect.py --login-sources) and is otherwise recorded as skipped. keywords are searched one at a time; search_args are passed to `opencli <site> search`. enabled:false skips a source (disabled_reason says why).",
   "_doc_charts": "App Store chart movers (scripts/charts.py), run by collect.py after the sources. countries and charts: Apple's public top-100 feeds read each run; the thresholds are the three lists' rules. Snapshots stay in the local state directory, never in the repo.",
   "charts": {
     "countries": [
@@ -648,6 +648,51 @@
       "filter": false,
       "category": "analysis",
       "claim": "opinion"
+    },
+    {
+      "id": "xiaohongshu",
+      "name": "小红书 (needs your login)",
+      "kind": "login",
+      "platform": "xiaohongshu",
+      "keywords": [
+        "AI工具",
+        "出海",
+        "副业 AI",
+        "独立开发"
+      ],
+      "limit": 10,
+      "search_args": [
+        "--sort",
+        "most-liked",
+        "--publish-time",
+        "day"
+      ],
+      "weight": 6,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "x-search",
+      "name": "X search (needs your login)",
+      "kind": "login",
+      "platform": "twitter",
+      "keywords": [
+        "launched lang:en min_faves:500 -filter:replies",
+        "MRR lang:en min_faves:200 -filter:replies",
+        "\"just hit\" lang:en min_faves:200 -filter:replies"
+      ],
+      "limit": 15,
+      "search_args": [
+        "--product",
+        "top",
+        "--top-by-engagement",
+        "10"
+      ],
+      "weight": 6,
+      "filter": true,
+      "category": "discussion",
+      "claim": "unverified"
     }
   ]
 }

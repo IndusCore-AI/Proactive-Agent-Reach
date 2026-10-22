@@ -82,6 +82,17 @@ def call(method: str, url: str, token: str | None = None, body: dict | None = No
 REQUIRED = ("url", "title", "source", "source_name", "category", "score")
 
 
+def run_status(statuses: list[dict], totals: dict, errors: list[str]) -> str:
+    """failed: nothing stored; partial: a source failed or an item was refused;
+    complete otherwise. A source skipped on purpose (it needs a founder's login,
+    "skipped: ..." on the edition) is not a failure."""
+    if totals["inserted"] + totals["updated"] + totals["merged"] == 0:
+        return "failed"
+    if any(not s["ok"] and not s.get("skipped") for s in statuses) or totals["rejected"] or errors:
+        return "partial"
+    return "complete"
+
+
 def load_curated(path: Path) -> list[dict]:
     doc = json.loads(path.read_text())
     items = doc["items"] if isinstance(doc, dict) else doc
@@ -426,13 +437,7 @@ def main() -> None:
         kept_by_source[it["source"]] = kept_by_source.get(it["source"], 0) + 1
     src_report = [{"source": s["source"], "name": s.get("name"), "ok": s["ok"], "fetched": s["fetched"], "kept": kept_by_source.get(s["source"], 0),
                    "error": s["error"]} for s in statuses]
-    persisted = totals["inserted"] + totals["updated"] + totals["merged"]
-    if persisted == 0:
-        final = "failed"
-    elif any(not s["ok"] for s in statuses) or totals["rejected"] or errors:
-        final = "partial"
-    else:
-        final = "complete"
+    final = run_status(statuses, totals, errors)
     status, fin = call("POST", f"{base}/api/ingest/runs/{run_id}/finish", token,
                        {"status": final, "sources": src_report, "errors": [e[:500] for e in errors][:100], "notes": args.notes})
     if status != 200:
@@ -461,7 +466,8 @@ def main() -> None:
         "run_id": run_id, "date": args.date, "status": fin["status"], "sent": len(items), **totals,
         "edition_items": fin["edition_items"], "already_in_other_editions": [r for r in results if r.get("note")],
         "sources_ok": [s["source"] for s in statuses if s["ok"]],
-        "sources_failed": [{"source": s["source"], "error": s["error"]} for s in statuses if not s["ok"]],
+        "sources_failed": [{"source": s["source"], "error": s["error"]} for s in statuses if not s["ok"] and not s.get("skipped")],
+        "sources_skipped": [{"source": s["source"], "error": s["error"]} for s in statuses if s.get("skipped")],
         "errors": errors, "db_verified": not missing_db and status == 200, "missing_in_db": missing_db,
         "page_verified": page_ok, "missing_on_page": missing_page, "page": f"{base}/{args.date}",
     }

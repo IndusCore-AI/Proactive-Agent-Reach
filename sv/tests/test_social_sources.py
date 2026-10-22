@@ -409,3 +409,150 @@ def test_an_essay_feed_skips_untitled_posts(monkeypatch):
     cands, fetched = collect.collect_rss(src, *WINDOW)
     assert fetched == 2 and [c["url"] for c in cands] == ["https://blog.example.com/the-firm-as-a-mind"]
     assert cands[0]["claim_status"] == "opinion" and cands[0]["excerpt"].startswith("Companies that learn")
+
+
+# ---------------------------------------------------------------- 小红书 and X (optional, login-gated)
+
+import ingest  # noqa: E402
+import social_login  # noqa: E402
+
+DOCTOR_WARN = {
+    "xiaohongshu": {"status": "warn", "backends": ["OpenCLI", "xiaohongshu-mcp", "xhs-cli (xiaohongshu-cli)"], "active_backend": None},
+    "twitter": {"status": "warn", "backends": ["twitter-cli", "OpenCLI", "bird CLI (legacy)"], "active_backend": None},
+}
+DOCTOR_OK = {
+    "xiaohongshu": {"status": "ok", "backends": ["OpenCLI"], "active_backend": "OpenCLI"},
+    "twitter": {"status": "ok", "backends": ["twitter-cli", "OpenCLI"], "active_backend": "OpenCLI"},
+}
+XHS_SRC = {"id": "xiaohongshu", "name": "小红书 (needs your login)", "kind": "login", "platform": "xiaohongshu",
+           "keywords": ["AI工具", "出海"], "limit": 10, "search_args": ["--publish-time", "day"], "weight": 6,
+           "filter": False, "category": "discussion", "claim": "unverified"}
+X_SRC = {**XHS_SRC, "id": "x-search", "name": "X search (needs your login)", "platform": "twitter", "keywords": ["MRR min_faves:200"],
+         "search_args": []}
+NOW = datetime(2026, 10, 22, 6, tzinfo=timezone.utc)
+
+
+def test_the_gate_follows_agent_reach_doctor():
+    assert social_login.decide(DOCTOR_OK, "xiaohongshu", False)[0] == "run"
+    action, why = social_login.decide(DOCTOR_WARN, "xiaohongshu", False)
+    assert action == "skip" and why.startswith("skipped: needs login (run agent-reach configure)") and "--login-sources" in why
+    assert social_login.decide(DOCTOR_WARN, "twitter", True)[0] == "probe"
+    assert social_login.decide({"twitter": {"status": "off", "backends": ["OpenCLI"]}}, "twitter", True)[0] == "skip"
+    other = {"twitter": {"status": "ok", "backends": ["twitter-cli", "OpenCLI"], "active_backend": "twitter-cli"}}
+    assert social_login.decide(other, "twitter", True) == (
+        "skip", "skipped: needs login (run agent-reach configure); doctor's active backend is twitter-cli, "
+                "and this step reads only through the OpenCLI bridge")
+    assert social_login.decide(None, "twitter", True)[1].startswith("skipped: agent-reach is not installed")
+    assert social_login.decide({"_error": "boom"}, "twitter", False)[0] == "skip"
+    for _, why in (social_login.decide(DOCTOR_WARN, p, False) for p in ("xiaohongshu", "twitter")):
+        assert len(why) <= 280   # fits the edition's error field
+
+
+def test_counts_and_times_as_the_platforms_show_them():
+    assert [social_login.count(v) for v in ("1.2万", "3.4w", "1.5K", "2M", "1,234", "10万+", 77, "", "n/a", True)] == \
+        [12000, 34000, 1500, 2000000, 1234, 100000, 77, None, None, None]
+    w = social_login.when
+    assert w("2天前", NOW) == NOW - timedelta(days=2) and w("3小时前", NOW) == NOW - timedelta(hours=3)
+    assert w("2h", NOW) == NOW - timedelta(hours=2) and w("刚刚", NOW) == NOW
+    assert w("昨天 12:30", NOW) == datetime(2026, 10, 21, 4, 30, tzinfo=timezone.utc)      # Beijing time
+    assert w("10-21", NOW) == datetime(2026, 10, 21, 4, tzinfo=timezone.utc)
+    assert w("12-30", NOW).year == 2025                                                   # a future MM-DD is last year
+    assert w("Wed Oct 21 16:00:00 +0000 2026", NOW) == datetime(2026, 10, 21, 16, tzinfo=timezone.utc)
+    assert w("2026-10-21T19:30:00.000Z", NOW) == datetime(2026, 10, 21, 19, 30, tzinfo=timezone.utc)
+    assert w("1792700000", NOW).year == 2026 and w("sometime", NOW) is None and w(None, NOW) is None
+
+
+def test_xiaohongshu_results_become_candidates_without_the_session_token():
+    rows = social_login.rows(fixture("opencli_xiaohongshu_search.json").decode())
+    cands = [social_login.xhs_candidate(XHS_SRC, r, "AI工具", NOW) for r in rows]
+    first, second, old, none = cands
+    assert none is None
+    assert first["url"] == "https://www.xiaohongshu.com/explore/6718a1b2000000001b012345"     # no xsec_token
+    assert "xsec_token" in first["extra"]["open_url"] and first["extra"]["keyword"] == "AI工具"
+    assert first["source_name"] == "小红书" and first["engagement"] == {"likes": 12000} and first["relevant"]
+    assert first["claim_status"] == "unverified" and first["category"] == "discussion"
+    assert first["published_at"] == (NOW - timedelta(days=2)).isoformat()
+    assert second["engagement"] == {"likes": 856}
+    assert old["published_at"].startswith("2025-03-01")
+    assert social_login.rows('{"data": [{"title": "x"}]}') == [{"title": "x"}]
+    with pytest.raises(collect.SourceError):
+        social_login.rows("Please log in")
+
+
+def test_x_results_become_embeddable_candidates():
+    rows = social_login.rows(fixture("opencli_twitter_search.json").decode())
+    first, second, old = (social_login.x_candidate(X_SRC, r, "MRR", NOW) for r in rows)
+    assert first["url"] == "https://x.com/examplefounder/status/1850000000000000001" and first["embed_url"] == first["url"]
+    assert svlib.detect_embed(first["url"]) == ("x", "1850000000000000001")
+    assert first["title"].startswith("We just hit $1M ARR, 14 months after launch. Thanks")
+    assert first["engagement"] == {"likes": 4100, "views": 380000} and first["author"] == "examplefounder"
+    assert second["url"] == "https://x.com/another_maker/status/1850000000000000002"          # built from id + handle
+    assert second["engagement"] == {"likes": 950}
+    assert old["published_at"].startswith("2023-01-02")
+
+
+def fake_cli(monkeypatch, report, answers):
+    """Patch doctor and the opencli calls; returns the list of commands run."""
+    calls = []
+    monkeypatch.setattr(social_login, "doctor", lambda: report)
+    monkeypatch.setattr(social_login, "_bin", lambda name, env: f"/bin/{name}")
+
+    def run(args, timeout):
+        calls.append(args)
+        return answers.pop(0)
+    monkeypatch.setattr(social_login, "run_cmd", run)
+    return calls
+
+
+def test_skipped_when_doctor_cannot_confirm_a_login(monkeypatch):
+    calls = fake_cli(monkeypatch, DOCTOR_WARN, [])
+    status, cands = collect.run_source(XHS_SRC, *WINDOW, False)
+    assert calls == [] and cands == []          # nothing ran in the founder's browser
+    assert status["ok"] is False and status["skipped"] is True
+    assert status["error"].startswith("skipped: needs login (run agent-reach configure)")
+
+
+def test_runs_searches_one_at_a_time_when_doctor_says_ok(monkeypatch):
+    xhs = fixture("opencli_xiaohongshu_search.json").decode()
+    calls = fake_cli(monkeypatch, DOCTOR_OK, [(0, xhs, ""), (0, "[]", "")])
+    cands, fetched = social_login.collect_login(XHS_SRC, NOW - timedelta(hours=48), NOW, False, now=NOW, pause=0)
+    assert fetched == 4 and [c["url"].rsplit("/", 1)[1] for c in cands] == ["6718a1b2000000001b012345", "6718a1b2000000001b0abcde"]
+    assert calls[0] == ["/bin/opencli", "xiaohongshu", "search", "AI工具", "--limit", "10", "--publish-time", "day",
+                        "--window", "background", "-f", "json"]
+    assert calls[1][3] == "出海"
+
+
+def test_x_search_adds_the_window_start(monkeypatch):
+    calls = fake_cli(monkeypatch, DOCTOR_OK, [(0, fixture("opencli_twitter_search.json").decode(), "")])
+    cands, _ = social_login.collect_login(X_SRC, NOW - timedelta(hours=48), NOW, False, now=NOW, pause=0)
+    assert calls[0][3] == "MRR min_faves:200 since:2026-10-20"
+    assert len(cands) == 2                      # the 2023 post is outside the window
+
+
+def test_probe_skips_on_an_empty_or_failed_first_search(monkeypatch):
+    fake_cli(monkeypatch, DOCTOR_WARN, [(0, "[]", "")])
+    with pytest.raises(social_login.Skipped, match="^skipped: needs login .*returned nothing"):
+        social_login.collect_login(X_SRC, *WINDOW, True, now=NOW, pause=0)
+    fake_cli(monkeypatch, DOCTOR_WARN, [(1, "", "Not logged in")])
+    with pytest.raises(social_login.Skipped, match="login check failed"):
+        social_login.collect_login(X_SRC, *WINDOW, True, now=NOW, pause=0)
+    fake_cli(monkeypatch, DOCTOR_WARN, [(0, fixture("opencli_twitter_search.json").decode(), "")])
+    cands, _ = social_login.collect_login(X_SRC, NOW - timedelta(hours=48), NOW, True, now=NOW, pause=0)
+    assert len(cands) == 2
+
+
+def test_a_skipped_login_source_does_not_make_the_run_partial():
+    totals = {"inserted": 3, "updated": 0, "merged": 0, "rejected": 0}
+    ok = {"source": "techcrunch", "ok": True}
+    skipped = {"source": "xiaohongshu", "ok": False, "skipped": True, "error": social_login.NEEDS_LOGIN}
+    failed = {"source": "reddit", "ok": False, "error": "HTTP 429 from Reddit"}
+    assert ingest.run_status([ok, skipped], totals, []) == "complete"
+    assert ingest.run_status([ok, skipped, failed], totals, []) == "partial"
+    assert ingest.run_status([ok], {**totals, "inserted": 0}, []) == "failed"
+
+
+def test_configured_login_sources():
+    login = {s["id"]: s for s in configured("login")}
+    assert login["xiaohongshu"]["platform"] == "xiaohongshu" and "出海" in login["xiaohongshu"]["keywords"]
+    assert login["x-search"]["platform"] == "twitter"
+    assert all(s["claim"] == "unverified" and s["keywords"] for s in login.values())

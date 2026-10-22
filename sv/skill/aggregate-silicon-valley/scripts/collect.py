@@ -41,6 +41,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import svlib  # noqa: E402
 
+# Run as a script, this module is __main__; helpers that `import collect`
+# (social_login.py) must get this same module, not a second copy.
+sys.modules.setdefault("collect", sys.modules[__name__])
+
 UA = "Mozilla/5.0 (compatible; KeepingUpSV/1.0; +https://induscore.site/sv/about)"
 SKILL_DIR = Path(__file__).resolve().parents[1]
 NS = {
@@ -696,8 +700,11 @@ def prescore(c: dict, end: datetime) -> dict:
         # a Reddit post: its place in the day's top list (RSS carries no scores)
         engagement = 24 * max(0.0, 1 - (eng["top_rank"] - 1) / max(1, eng.get("of", 1)))
     elif "views" in eng:
-        # a video: 250k views inside the 48-hour window is as strong as a 900-point HN story
+        # a video (or an X post with a view count): 250k views inside the 48-hour window is as strong as a 900-point HN story
         engagement = 35 * min(1.0, math.log10(1 + eng["views"]) / math.log10(1 + 250_000))
+    elif "likes" in eng:
+        # a 小红书 note: 20k likes inside a day is as strong as it gets
+        engagement = 35 * min(1.0, math.log10(1 + eng["likes"]) / math.log10(1 + 20_000))
     else:
         engagement = 12.0  # an editor (the publication) already chose it
     kind = {"funding": 10, "acquisition": 10, "launch": 6, "analysis": 2}.get(c["category"], 0)
@@ -761,6 +768,10 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
             cands, fetched = collect_reddit(src, start, end)
         elif src["kind"] == "youtube":
             cands, fetched = collect_youtube(src, start, end)
+        elif src["kind"] == "login":
+            import social_login  # noqa: E402  (optional: only when a login source is enabled)
+
+            cands, fetched = social_login.collect_login(src, start, end, LOGIN_PROBE)
         else:
             raise SourceError(f"unknown kind {src['kind']}")
         if src.get("filter"):
@@ -768,13 +779,17 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
         return {"source": src["id"], "name": src["name"], "ok": True, "fetched": fetched, "in_window": len(cands),
                 "seconds": round(time.time() - t0, 1), "error": None}, cands
     except Exception as e:  # one bad source never stops the run
-        return {"source": src["id"], "name": src["name"], "ok": False, "fetched": 0, "in_window": 0,
-                "seconds": round(time.time() - t0, 1), "error": str(e)[:280] or type(e).__name__}, []
+        status = {"source": src["id"], "name": src["name"], "ok": False, "fetched": 0, "in_window": 0,
+                  "seconds": round(time.time() - t0, 1), "error": str(e)[:280] or type(e).__name__}
+        if type(e).__name__ == "Skipped":   # skipped on purpose (needs the founder's login): not a failure
+            status["skipped"] = True
+        return status, []
 
 
 # Sources that must not run in parallel with each other share a lane: one
 # worker reads them in order (Reddit allows one request at a time).
-LANES = {"reddit": "reddit"}
+LANES = {"reddit": "reddit", "login": "browser"}
+LOGIN_PROBE = False   # --login-sources: try the founder's logged-in browser even when doctor cannot confirm it
 
 
 def run_all(sources: list[dict], start: datetime, end: datetime, is_today: bool) -> list[tuple[dict, list[dict]]]:
@@ -802,7 +817,12 @@ def main() -> None:
     ap.add_argument("--out", help="output directory (default: <tmp>/keeping-up-sv/<date>)")
     ap.add_argument("--only", help="comma-separated source ids to run (add 'charts' to include the chart movers)")
     ap.add_argument("--no-charts", action="store_true", help="skip the App Store chart movers")
+    ap.add_argument("--login-sources", action="store_true",
+                    help="let the 小红书 and X sources use your own logged-in Chrome (OpenCLI) even when agent-reach "
+                         "doctor cannot confirm the login; one read-only search checks it first")
     args = ap.parse_args()
+    global LOGIN_PROBE
+    LOGIN_PROBE = args.login_sources
 
     today = svlib.today_pt()
     day = date.fromisoformat(args.date) if args.date else today
@@ -830,10 +850,13 @@ def main() -> None:
     (out / "sources.json").write_text(json.dumps(statuses, indent=1))
 
     ok = sum(s["ok"] for s in statuses)
+    skipped = sum(bool(s.get("skipped")) for s in statuses)
     print(f"edition {day}  window {start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M} UTC")
-    print(f"sources ok {ok}/{len(statuses)}; candidates {len(cands)} (after merging duplicates)")
+    print(f"sources ok {ok}/{len(statuses)}" + (f" ({skipped} skipped: need a login)" if skipped else "")
+          + f"; candidates {len(cands)} (after merging duplicates)")
     for s in statuses:
-        print(f"  {'ok ' if s['ok'] else 'ERR'} {s['source']:<22} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
+        mark = "ok  " if s["ok"] else "skip" if s.get("skipped") else "ERR "
+        print(f"  {mark} {s['source']:<22} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
     print(f"wrote {out / 'candidates.json'}")
 
     if not args.no_charts and (not args.only or "charts" in args.only.split(",")):
