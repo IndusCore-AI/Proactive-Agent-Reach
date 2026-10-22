@@ -2,8 +2,9 @@
 name: aggregate-silicon-valley
 description: >
   Run the daily aggregation for Keeping Up with Silicon Valley (induscore.site/sv): collect startup, funding,
-  launch, founder and VC stories from the configured sources, curate them, persist them to the VM database
-  through the site's ingest API, and verify they are live. Use when the user says /aggregate-silicon-valley
+  launch, founder and VC stories from the configured sources (news, essays, YouTube, Reddit, App Store chart
+  movers; 小红书 and X only with a founder's login), curate them, persist them to the VM database through the
+  site's ingest API, verify they are live, and propose up to 3 movers to the founders' desk. Use when the user says /aggregate-silicon-valley
   [YYYY-MM-DD], "run today's Silicon Valley feed", "aggregate the SV feed", "backfill the feed for <date>",
   "rerun the startup feed", or asks why an edition is missing or partial. Not for changing the site's code.
 ---
@@ -44,9 +45,25 @@ are safe.
 ```bash
 python3 -I scripts/collect.py --date D --out "${TMPDIR:-/tmp}/keeping-up-sv/D"
 ```
-It prints each source's status. Failed sources are expected sometimes (Reddit rate limits anonymous
-readers); the run continues and the failure is recorded on the edition. Do not retry a failed source more
-than once, and never work around a block (403, robots, login walls).
+It prints each source's status and writes three files to that directory: `candidates.json` (stories to
+curate), `sources.json` (each source's status, sent with the edition) and `chart-movers.json` (App Store
+chart movers for step 5; `--no-charts` skips them). What the sources need:
+
+- **No login**: news and launch feeds, Hacker News, YC Launches, investor and operator essays, company
+  blogs, YouTube channels (public channel feeds) and Apple's public chart feeds. These should all say `ok`.
+- **Best effort**: Reddit. Reddit allows anonymous readers about one request a minute, so its four sources
+  are read one after another, as slowly as Reddit's headers ask; a full run takes a few minutes longer than
+  before. A 429 is retried once, then that source fails and the others are marked "not tried". That is
+  expected sometimes; the failure is recorded on the edition and the run is `partial`.
+- **Needs a founder's login** (optional): 小红书 and X search through agent-reach's OpenCLI bridge, i.e. the
+  founder's own logged-in Chrome. They run only when `agent-reach doctor --json` reports the channel ok
+  through OpenCLI. Doctor never checks a login itself, so a founder who is logged in to xiaohongshu.com or
+  x.com in Chrome can add `--login-sources` to the collect command: one read-only search proves the login
+  first. Otherwise they print `skip` with "skipped: needs login (run agent-reach configure)"; that is
+  recorded on the edition and does not make the run partial. Never log in for the founder, never export
+  or store cookies, never work around a captcha.
+
+Do not retry a failed source more than once, and never work around a block (403, robots, login walls).
 
 **2. Curate.** Read `candidates.json` (ranked by a heuristic `score`). Write `curated.json` in the same
 directory: `{"items": [...]}`. Aim for the best 25–45 stories; on a quiet day fewer is right. Never
@@ -83,6 +100,18 @@ For each kept candidate, start from its fields and fix them:
   `score_detail.why` (one plain sentence a reader would understand, e.g. "Largest disclosed AI round this
   week; covered by three outlets."). Keep the rest of `score_detail`.
 - `embed_url`: only if the story *is* an X post or YouTube video (the site uses the platforms' own embeds).
+  YouTube candidates and X candidates from the login search already have the right URL; keep it.
+- **YouTube videos** (sources `yt-*`): keep interviews and talks with a clear startup, product or investing
+  angle; drop clips, promos and off-topic episodes. `analysis`/`opinion` for investor and founder talks;
+  `discussion`/`unverified` for founder case studies with revenue claims (Starter Story). The excerpt is the
+  channel's own description. To judge a video you are unsure about, you may read its subtitles
+  (`yt-dlp --skip-download --write-auto-subs --sub-langs "en.*,zh.*" -o "$DIR/subs/%(id)s" <url>`, the
+  agent-reach YouTube channel). Use them only to decide and to write a summary grounded in what is said;
+  never put a transcript into `curated.json`, the database or a summary longer than the usual two
+  sentences, and delete `$DIR/subs` before you finish.
+- **Reddit and 小红书/X posts** are `discussion` with `claim_status: unverified`: any growth or revenue
+  figure in them is the poster's claim. A 小红书 candidate's `extra.open_url` (with the session's
+  `xsec_token`) is for you to open while curating; the item's `url` stays the bare note URL.
 - Copy `url`, `source`, `source_name`, `published_at`, `author`, `mentions` from the candidate. Drop the
   helper fields (`id`, `found_in`, `weight`, `relevant`, `engagement`, `funding_hint`, `extra`,
   `engagement_self`); the ingest script ignores unknown fields anyway. Keep `image_url` and `image_kind`
@@ -108,8 +137,8 @@ embed URL; only use ones the script found or that the source itself links.
 ```bash
 python3 -I scripts/ingest.py --date D --curated "$DIR/curated.json" --sources "$DIR/sources.json"
 ```
-It starts a run, sends the items, finishes the run with every source's status (`complete` only when every
-source worked and nothing was rejected, otherwise `partial`), then checks the database holds every story
+It starts a run, sends the items, finishes the run with every source's status (`complete` when every
+source worked or was skipped for want of a login and nothing was rejected, otherwise `partial`), then checks the database holds every story
 and the public page `https://induscore.site/sv/D` shows the top ones. Exit code 0 means both checks passed.
 If items are rejected, read the reason, fix `curated.json`, and rerun the same command: reruns update in
 place and never duplicate.
@@ -220,6 +249,13 @@ proposals use `movers --propose`, which also refuses existing movers). The file:
 - `HTTP 403 invalid ingest token`: your token was rotated or revoked; redo the one-time setup.
 - A run that died midway stays `running` and is marked failed after 3 hours; just rerun the date.
 - Page check failed but DB check passed: the page cache refreshes within 5 minutes; open the page again.
+- Reddit sources `ERR ... HTTP 429` or `not tried: Reddit rate-limited this run`: expected some days. Do not
+  rerun collect just for Reddit; the next run tries again.
+- `skip xiaohongshu` / `skip x-search`: no confirmed login (see step 1). The edition is complete without
+  them.
+- `chart movers: N/24 feeds`: a few chart feeds time out some days; the lists use the ones that loaded, and
+  `chart-movers.json` names the missing ones. Snapshots live in `~/.local/state/keeping-up-sv/charts/`
+  (or `$KEEPING_UP_SV_STATE`); deleting them only means the next run has nothing to compare.
 
 More: `sv/README.md` in https://github.com/gaurpulkit/Proactive-Agent-Reach and the teamctx items tagged
 `keeping-up-sv`.
