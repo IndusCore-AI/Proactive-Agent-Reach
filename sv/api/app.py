@@ -37,7 +37,7 @@ STALE_RUN = timedelta(hours=3)
 
 Category = Literal["funding", "acquisition", "launch", "news", "discussion", "analysis"]
 ClaimStatus = Literal["confirmed", "reported", "unverified", "opinion"]
-Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,31}$")]
+Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
 
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
 
@@ -92,7 +92,7 @@ class Funding(BaseModel):
 class Mention(BaseModel):
     url: str
     source: Slug
-    label: str = Field(min_length=2, max_length=80)
+    label: str = Field(min_length=1, max_length=80)
     points: int | None = Field(default=None, ge=0, le=10_000_000)
     comments: int | None = Field(default=None, ge=0, le=10_000_000)
 
@@ -106,7 +106,7 @@ class ItemIn(BaseModel):
     url: str
     title: str = Field(min_length=3, max_length=300)
     source: Slug
-    source_name: str = Field(min_length=2, max_length=60)
+    source_name: str = Field(min_length=1, max_length=60)
     category: Category
     tags: list[Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]] = Field(default_factory=list, max_length=8)
     excerpt: str | None = Field(default=None, max_length=400)
