@@ -41,6 +41,7 @@ test('the passphrase is checked against its sha256', () => {
   const hash = createHash('sha256').update('correct horse battery staple').digest('hex');
   assert.equal(passphraseMatches('correct horse battery staple', hash), true);
   assert.equal(passphraseMatches('correct horse battery staple', hash.toUpperCase()), true);
+  assert.equal(passphraseMatches('correct horse battery staple', `${hash}\n`), true);
   assert.equal(passphraseMatches('correct horse battery stapl', hash), false);
   assert.equal(passphraseMatches('', hash), false);
   assert.equal(passphraseMatches('correct horse battery staple', ''), false);

@@ -40,7 +40,7 @@ export function verifyUnlock(value: string | undefined, secret: string | undefin
 
 /** sha256(passphrase) against the configured hex digest, in constant time. */
 export function passphraseMatches(passphrase: string, expectedSha256Hex: string | undefined): boolean {
-  if (!passphrase || passphrase.length > MAX_PASSPHRASE) return false;
-  if (!expectedSha256Hex || !/^[0-9a-f]{64}$/i.test(expectedSha256Hex)) return false;
-  return sameHex(createHash('sha256').update(passphrase).digest('hex'), expectedSha256Hex.toLowerCase());
+  const want = (expectedSha256Hex ?? '').trim().toLowerCase(); // tolerate a pasted trailing newline
+  if (!passphrase || passphrase.length > MAX_PASSPHRASE || !/^[0-9a-f]{64}$/.test(want)) return false;
+  return sameHex(createHash('sha256').update(passphrase).digest('hex'), want);
 }
