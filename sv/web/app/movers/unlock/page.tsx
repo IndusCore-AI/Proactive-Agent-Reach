@@ -3,7 +3,8 @@ import Link from 'next/link';
 
 import { Bar } from '@/components/Chrome';
 import { LockButton } from '@/components/Movers';
-import { isUnlocked } from '@/lib/founders';
+import { currentFounder } from '@/lib/founders';
+import { FOUNDERS, founderName } from '@/lib/unlock';
 
 // Bookmarked by the founders; linked from nowhere, never indexed.
 export const dynamic = 'force-dynamic';
@@ -17,25 +18,36 @@ type SP = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function Unlock({ searchParams }: { searchParams: SP }) {
   const failed = (await searchParams).failed !== undefined;
-  const unlocked = await isUnlocked();
+  const me = await currentFounder();
   return (
     <>
       <Bar current="movers" />
       <div className="wrap">
         <main id="main" className="unlock">
           <h1 className="page-title">Founders</h1>
-          {unlocked ? (
+          {me ? (
             <>
-              <p className="tagline">This browser is unlocked for 30 days.</p>
+              <p className="tagline">This browser is unlocked for 30 days as {founderName(me)}.</p>
               <div className="cta">
                 <Link className="btn primary" href="/movers">
-                  Go to Movers
+                  Go to the desk
                 </Link>
                 <LockButton />
               </div>
             </>
           ) : (
             <form className="unlock-form" action="/sv/api/founders/unlock" method="post">
+              <fieldset className="who">
+                <legend>Who are you?</legend>
+                <div className="seg">
+                  {FOUNDERS.map((f) => (
+                    <label key={f.key} className="seg-btn">
+                      <input type="radio" name="who" value={f.key} required />
+                      {f.name}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
               <label htmlFor="passphrase">Passphrase</label>
               <div className="search">
                 <input

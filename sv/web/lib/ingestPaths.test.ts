@@ -21,6 +21,10 @@ test('mover paths are allowed with the right method only', () => {
   assert.equal(ingestPathAllowed('GET', ['movers', 'example-robotics', 'archive']), false);
   assert.equal(ingestPathAllowed('POST', ['movers', 'example-robotics', 'delete']), false);
   assert.equal(ingestPathAllowed('POST', ['movers', '-bad', 'link']), false);
+  assert.equal(ingestPathAllowed('GET', ['movers', 'feedback']), true);
+  assert.equal(ingestPathAllowed('POST', ['movers', 'example-robotics', 'notes']), true);
+  assert.equal(ingestPathAllowed('GET', ['movers', 'example-robotics', 'notes']), false);
+  assert.equal(ingestPathAllowed('POST', ['movers', 'feedback']), false);
 });
 
 test('anything else is refused', () => {

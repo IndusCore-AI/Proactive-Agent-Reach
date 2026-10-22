@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { CLAIM_LABEL, MOVER_KIND_LABEL, hostOf, moverPath, shortDate } from '@/lib/format';
+import { founderName } from '@/lib/unlock';
 import type { Mover, MoverNotes, Traction } from '@/lib/types';
 
 import { MoverLogo } from './MoverLogo';
@@ -47,7 +48,7 @@ export function Markets({ markets }: { markets: string[] }) {
   );
 }
 
-/** The founders' take. Rendered only on a request that passed isUnlocked();
+/** The founders' take. Rendered only on a request that passed currentFounder();
  * `notes` is undefined when this mover has none and `failed` when the private
  * read did not answer. */
 export function OurTake({ notes, failed = false }: { notes?: MoverNotes; failed?: boolean }) {
@@ -99,10 +100,10 @@ export function LockButton() {
   );
 }
 
-export function FoundersBar() {
+export function FoundersBar({ who }: { who?: string }) {
   return (
     <form action="/sv/api/founders/lock" method="post" className="founders">
-      <span className="founders-state">Founders view</span>
+      <span className="founders-state">{who ? founderName(who) : 'Founders view'}</span>
       <span aria-hidden="true">·</span>
       <button type="submit" className="founders-lock">
         Lock
@@ -111,11 +112,34 @@ export function FoundersBar() {
   );
 }
 
-export function MoverCard({ mover, take }: { mover: Mover; take?: { notes?: MoverNotes; failed: boolean } }) {
+/** "3 new stories in the last 14 days": the public trending signal. */
+function Trend({ mover }: { mover: Mover }) {
+  if (!mover.news_recent) return null;
+  return (
+    <span className="trend">
+      <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M2 11.5 6.5 7l3 3L14 5.5M10 5.5h4v4" />
+      </svg>
+      {mover.news_recent} new {mover.news_recent === 1 ? 'story' : 'stories'} in 14 days
+    </span>
+  );
+}
+
+export function MoverCard({
+  mover,
+  take,
+  strip,
+}: {
+  mover: Mover;
+  take?: { notes?: MoverNotes; failed: boolean };
+  /** Founders only: score, stage and votes, above the facts. */
+  strip?: React.ReactNode;
+}) {
   const path = moverPath(mover.id);
   const more = mover.traction.length - CARD_TRACTION;
   return (
     <article className="mover" id={`m-${mover.id}`}>
+      {strip}
       <div className="mover-head">
         <MoverLogo src={mover.image_url} kind={mover.image_kind} name={mover.name} />
         <div className="mover-name">
@@ -133,6 +157,7 @@ export function MoverCard({ mover, take }: { mover: Mover; take?: { notes?: Move
         </Link>
       )}
       <Markets markets={mover.markets_live} />
+      <Trend mover={mover} />
       <div className="meta">
         <a href={mover.url} rel="noopener" target="_blank">
           {hostOf(mover.url)} ↗

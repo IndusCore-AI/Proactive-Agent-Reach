@@ -2,8 +2,13 @@ import 'server-only';
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import { isUnlocked } from './founders';
-import type { Feed, Item, ItemDetail, MoverDetail, MoverKind, MoverList, MoverNotes } from './types';
+import { cache } from 'react';
+
+import { currentFounder } from './founders';
+import type {
+  DeskDetail, DeskList, DeskUpdate, Feed, Item, ItemDetail, MoverDetail, MoverKind, MoverList, MoverStage, MoverStatus,
+  MoverUpdate,
+} from './types';
 
 // The VM API is reachable only through a Cloudflare quick tunnel whose
 // hostname changes when the tunnel restarts. The VM announces the current URL
@@ -153,7 +158,9 @@ export function getSitemapData(): Promise<{
 }
 
 /** Movers' public facts, cached like every other read. */
-export function getMovers(q: { kind?: MoverKind; limit?: number; offset?: number } = {}): Promise<MoverList> {
+export function getMovers(
+  q: { kind?: MoverKind; sort?: 'trending' | 'newest'; limit?: number; offset?: number } = {},
+): Promise<MoverList> {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) if (v !== undefined) p.set(k, String(v));
   return get(`/v1/movers?${p}`);
@@ -163,31 +170,66 @@ export function getMover(id: string): Promise<MoverDetail> {
   return get(`/v1/movers/${encodeURIComponent(id)}`);
 }
 
-/** The founders' take on these movers, or null when it cannot be shown.
- *
- * PRIVATE. Answers only for a request that carries a valid unlock cookie
- * (checked here, so no caller can forget). Uses its own token, and is never
- * stored in Next's data cache: `cache: 'no-store'`, no `next` options, no tags. */
-export async function getPrivateNotes(ids: string[]): Promise<Record<string, MoverNotes> | null> {
-  if (!(await isUnlocked())) return null;
-  const token = process.env.SV_PRIVATE_READ_TOKEN;
+export function getMoverUpdates(limit = 60): Promise<{ updates: MoverUpdate[] }> {
+  return get(`/v1/movers/updates?limit=${limit}`);
+}
+
+// ---------------------------------------------------------------- founders' desk
+//
+// PRIVATE. Every call below answers only for a request that carries a valid
+// unlock cookie (checked here, so no caller can forget). They use their own
+// token, SV_FOUNDERS_TOKEN, and are never stored in Next's data cache:
+// `cache: 'no-store'`, no `next` options, no tags.
+
+async function desk(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response | null> {
+  if (!(await currentFounder())) return null;
+  const token = process.env.SV_FOUNDERS_TOKEN;
   if (!token) return null;
-  if (!ids.length) return {};
-  const query = new URLSearchParams({ ids: ids.join(',') });
   for (const refresh of [false, true]) {
     try {
-      const res = await fetch(`${await apiBase(refresh)}/v1/private/movers?${query}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch(`${await apiBase(refresh)}${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
         cache: 'no-store',
         signal: AbortSignal.timeout(8000),
       });
-      if (res.ok) return (await res.json()) as Record<string, MoverNotes>;
-      if (!refresh && res.status >= 500) continue;
-      return null;
+      if (!refresh && res.status >= 500 && method === 'GET') continue;
+      return res;
     } catch (err) {
       if (err && typeof err === 'object' && 'digest' in err) throw err;
       if (refresh) return null;
     }
   }
   return null;
+}
+
+async function deskGet<T>(path: string): Promise<T | null> {
+  const res = await desk('GET', path);
+  return res?.ok ? ((await res.json()) as T) : null;
+}
+
+export type DeskQuery = { status?: MoverStatus | 'active'; kind?: MoverKind; stage?: MoverStage; sort?: 'fit' | 'votes' | 'trending' | 'newest' };
+
+/** Every mover with the founders' take, score, stage and votes; null when it cannot be shown. */
+export function getDesk(q: DeskQuery = {}): Promise<DeskList | null> {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) if (v) p.set(k, v);
+  return deskGet(`/v1/private/desk?${p}`);
+}
+
+/** One mover in any status, or null (not unlocked, unreachable, or no such
+ * mover). Once per request: the page and its metadata share the answer (the
+ * timeout signal opts the fetch out of Next's own de-duplication). */
+export const getDeskMover = cache((id: string): Promise<DeskDetail | null> => deskGet(`/v1/private/movers/${encodeURIComponent(id)}`));
+
+export function getDeskUpdates(limit = 100): Promise<{ updates: DeskUpdate[] } | null> {
+  return deskGet(`/v1/private/updates?limit=${limit}`);
+}
+
+/** A vote, stage change or status change from the desk. Returns the API's
+ * status code, or null when the request is not unlocked or the API is down. */
+export async function deskAction(id: string, action: 'vote' | 'stage' | 'status', body: Record<string, unknown>): Promise<number | null> {
+  const res = await desk('POST', `/v1/private/movers/${encodeURIComponent(id)}/${action}`, body);
+  return res ? res.status : null;
 }

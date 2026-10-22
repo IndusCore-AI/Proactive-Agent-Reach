@@ -4,20 +4,24 @@ import { notFound } from 'next/navigation';
 
 import { Card } from '@/components/Cards';
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
+import { DecisionPanel, History, NextSteps, STATUS_LABEL, ScoreCard } from '@/components/Desk';
 import { MoverLogo } from '@/components/MoverLogo';
 import { FoundersBar, Markets, OurTake, TractionList } from '@/components/Movers';
-import { ApiError, getMover, getPrivateNotes } from '@/lib/api';
-import { isUnlocked } from '@/lib/founders';
+import { ApiError, getDeskMover, getMover } from '@/lib/api';
+import { currentFounder } from '@/lib/founders';
+import { nextSteps } from '@/lib/nextSteps';
 import {
   CLAIM_LABEL, MOVER_ID_RE, MOVER_KIND_LABEL, SITE_NAME, abs, hostOf, moverPath, shortDate, tagLabel, todayPT,
 } from '@/lib/format';
-import type { MoverDetail } from '@/lib/types';
+import type { DeskDetail, MoverDetail } from '@/lib/types';
 
-// Per request: public facts from the data cache; the founders' take only for
-// an unlocked browser, never cached.
+// Per request: public facts from the data cache; the founders' desk (take,
+// score, votes, stage, next steps, and movers not yet public) only for an
+// unlocked browser, never cached.
 export const dynamic = 'force-dynamic';
 
 type Params = Promise<{ id: string }>;
+type SP = Promise<Record<string, string | string[] | undefined>>;
 
 const CLAIM_EXPLAINED = {
   confirmed: 'The company or maker states these facts itself.',
@@ -27,7 +31,7 @@ const CLAIM_EXPLAINED = {
 
 const KIND_PHRASE = { company: 'a company to watch', app: 'an app to watch', skill: 'a skill to watch' } as const;
 
-async function load(id: string): Promise<MoverDetail> {
+async function loadPublic(id: string): Promise<MoverDetail> {
   if (!MOVER_ID_RE.test(id)) notFound();
   try {
     return await getMover(id);
@@ -37,6 +41,13 @@ async function load(id: string): Promise<MoverDetail> {
   }
 }
 
+/** The desk's view for a founder (any status), else the public facts. */
+async function load(id: string): Promise<{ m: MoverDetail; desk: DeskDetail | null }> {
+  if (!MOVER_ID_RE.test(id)) notFound();
+  const desk = (await currentFounder()) ? await getDeskMover(id) : null;
+  return desk ? { m: desk, desk } : { m: await loadPublic(id), desk: null };
+}
+
 /** Public facts only: the one-liner and the first traction figures. */
 function describe(m: MoverDetail): string {
   const figures = m.traction.slice(0, 2).map((t) => `${t.label}: ${t.value} (as of ${shortDate(t.as_of)})`);
@@ -44,11 +55,13 @@ function describe(m: MoverDetail): string {
 }
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
-  const m = await load((await params).id);
+  const { m, desk } = await load((await params).id);
   const url = abs(moverPath(m.id));
   const title = `${m.name}, ${KIND_PHRASE[m.kind]}`;
   return {
     title,
+    // The founders' view of a page is never indexed (a proposed mover has no public page at all).
+    ...(desk ? { robots: { index: false, follow: false, nocache: true } } : {}),
     description: describe(m),
     alternates: { canonical: url },
     openGraph: { title, description: describe(m), url, type: 'website' },
@@ -56,17 +69,17 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   };
 }
 
-export default async function MoverPage({ params }: { params: Params }) {
+export default async function MoverPage({ params, searchParams }: { params: Params; searchParams: SP }) {
   const { id } = await params;
-  const m = await load(id);
-  const unlocked = await isUnlocked();
-  const notes = unlocked ? await getPrivateNotes([m.id]) : null;
+  const me = await currentFounder();
+  const { m, desk } = await load(id);
+  const failed = (await searchParams).failed !== undefined;
   const path = moverPath(m.id);
 
   return (
     <>
       <Bar current="movers" />
-      <JsonLd
+      {!desk && <JsonLd
         data={{
           '@context': 'https://schema.org',
           '@graph': [
@@ -97,7 +110,7 @@ export default async function MoverPage({ params }: { params: Params }) {
             },
           ],
         }}
-      />
+      />}
       <div className="wrap">
         <ol className="crumbs">
           <li>
@@ -115,10 +128,18 @@ export default async function MoverPage({ params }: { params: Params }) {
               <div className="labels">
                 <span className="kind">{MOVER_KIND_LABEL[m.kind]}</span>
                 {m.claim_status !== 'confirmed' && <span className="claim">{CLAIM_LABEL[m.claim_status]}</span>}
+                {desk && desk.status !== 'watching' && <span className={`status-dot ${desk.status}`}>{STATUS_LABEL[desk.status]}</span>}
               </div>
               <h1 className="story-title">{m.name}</h1>
             </div>
+            {me && <FoundersBar who={me} />}
           </div>
+          {desk && me && (
+            <div className="desk-grid">
+              <DecisionPanel mover={desk} me={me} failed={failed} />
+              <ScoreCard score={desk.score} />
+            </div>
+          )}
           <p className="context">{m.one_liner}</p>
           {m.summary && <p className="excerpt">{m.summary}</p>}
           {m.traction.length > 0 && (
@@ -135,18 +156,14 @@ export default async function MoverPage({ params }: { params: Params }) {
               Visit {hostOf(m.url)} ↗
             </a>
           </div>
-          {unlocked && (
-            <>
-              <OurTake notes={notes?.[m.id]} failed={notes === null} />
-              <FoundersBar />
-            </>
-          )}
+          {me && <OurTake notes={desk?.notes} failed={!desk} />}
+          {desk && <NextSteps steps={nextSteps(desk, abs(path))} />}
           <dl>
             <dt>Kind</dt>
             <dd>{MOVER_KIND_LABEL[m.kind]}</dd>
             <dt>Status</dt>
             <dd>{CLAIM_EXPLAINED[m.claim_status]}</dd>
-            <dt>On the list since</dt>
+            <dt>{desk && desk.status === 'proposed' ? 'Proposed' : 'On the list since'}</dt>
             <dd>{shortDate(todayPT(new Date(m.first_added_at)))}</dd>
             <dt>Facts updated</dt>
             <dd>{shortDate(todayPT(new Date(m.updated_at)))}</dd>
@@ -157,6 +174,7 @@ export default async function MoverPage({ params }: { params: Params }) {
               </>
             )}
           </dl>
+          {desk && <History events={desk.events} />}
         </main>
         <section className="section" id="news" aria-labelledby="news-head" style={{ paddingBottom: 48 }}>
           <div className="section-head">

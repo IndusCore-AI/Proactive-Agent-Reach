@@ -100,6 +100,8 @@ export interface Mover {
   updated_at: string;
   news_count: number;
   latest_news_at: string | null;
+  /** Stories published in the last 14 days: what "Trending" sorts by. */
+  news_recent: number;
 }
 
 export interface MoverDetail extends Mover {
@@ -118,10 +120,87 @@ export interface MoverRef {
   kind: MoverKind;
 }
 
-/** PRIVATE: only ever fetched for a founders-unlocked request (lib/api.ts getPrivateNotes). */
+/** A public line on /movers/updates: a mover added to the list, or new stories pointing at one. */
+export interface MoverUpdate {
+  id: number;
+  at: string;
+  kind: 'added' | 'news';
+  mover_id: string;
+  name: string;
+  mover_kind: MoverKind;
+  count: number | null;
+}
+
+// ---------------------------------------------------------------- PRIVATE
+// Everything below is only ever fetched for a founders-unlocked request
+// (lib/api.ts, the desk* functions), never cached, never rendered otherwise.
+
+export type MoverStatus = 'proposed' | 'watching' | 'archived';
+export type MoverStage = 'new' | 'researching' | 'building' | 'passed';
+export type RubricLine = 'demand' | 'problem' | 'fit' | 'wedge' | 'market' | 'future' | 'moat' | 'whitespace';
+
 export interface MoverNotes {
   take: string | null;
   learn: string | null;
   localize: string | null;
-  updated_at: string;
+  updated_at: string | null;
+}
+
+/** The office-hours rubric for the localized idea, in one named market. */
+export interface Score {
+  total: number;
+  lines: Record<RubricLine, number>;
+  market: string;
+  verdict: string | null;
+  scored_at?: string;
+  scored_by?: string;
+}
+
+export interface Vote {
+  voter: string;
+  vote: 1 | -1;
+  reason: string | null;
+  at: string;
+}
+
+export interface DeskMover extends Mover {
+  status: MoverStatus;
+  added_by: string;
+  notes: MoverNotes;
+  score: Score | null;
+  stage: MoverStage;
+  votes: Vote[];
+  net_votes: number;
+}
+
+export interface DeskEvent {
+  id: number;
+  at: string;
+  kind: 'proposed' | 'added' | 'news' | 'vote' | 'stage' | 'scored' | 'archived';
+  actor: string;
+  detail: Record<string, unknown>;
+}
+
+export interface DeskDetail extends DeskMover {
+  items: Item[];
+  events: DeskEvent[];
+}
+
+export interface DeskList {
+  movers: DeskMover[];
+  facets: {
+    status: Partial<Record<MoverStatus, number>>;
+    kind: Partial<Record<MoverKind, number>>;
+    stage: Partial<Record<MoverStage, number>>;
+    /** Stages over every mover not archived, for the desk's tiles. */
+    stage_active: Partial<Record<MoverStage, number>>;
+  };
+}
+
+export interface DeskUpdate extends DeskEvent {
+  private: boolean;
+  mover_id: string;
+  name: string;
+  mover_kind: MoverKind;
+  status: MoverStatus;
 }
