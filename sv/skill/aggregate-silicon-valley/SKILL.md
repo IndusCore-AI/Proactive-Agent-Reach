@@ -4,7 +4,8 @@ description: >
   Run the daily aggregation for Keeping Up with Silicon Valley (induscore.site/sv): collect startup, funding,
   launch, founder and VC stories from the configured sources (news, essays, YouTube, Reddit, App Store chart
   movers; 小红书 and X only with a founder's login), curate them, persist them to the VM database through the
-  site's ingest API, verify they are live, and propose up to 3 movers to the founders' desk. Use when the user says /aggregate-silicon-valley
+  site's ingest API, verify they are live, and propose up to 3 movers to the founders' desk. Also records a founder's
+  research runs (verdicts and every scored idea) on the private Research page. Use when the user says /aggregate-silicon-valley
   [YYYY-MM-DD], "run today's Silicon Valley feed", "aggregate the SV feed", "backfill the feed for <date>",
   "rerun the startup feed", or asks why an edition is missing or partial. Not for changing the site's code.
 ---
@@ -240,6 +241,37 @@ proposals use `movers --propose`, which also refuses existing movers). The file:
   passed. Proposed movers have no public page to check.
 - `python3 -I scripts/ingest.py archive <mover-id>` stops watching one (it leaves the site; the founder can
   restore it by sending it again with `"status": "watching"`).
+
+## Research runs
+
+When a founder asks for research (a prompt from a call, a lead, a rerun) and you score ideas on the rubric,
+record the result on the founders' private **Research** page (`/sv/movers/research`) so it is not only in a
+file on someone's Desktop. Write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/` or next to the write-up
+(never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py research <file.json>`:
+
+```json
+{"runs": [{
+  "id": "2026-10-22-example-lead", "title": "Example lead", "run_date": "2026-10-22", "position": 3,
+  "outcome": "below_cutoff", "verdict": "Out, 30",
+  "summary": "What was asked and the answer, max 1500 chars.", "method": "Where you looked, max 1500 chars.",
+  "findings": [{"title": "The lead in bold", "text": "The finding, with its numbers"}, {"group": "How they grew", "text": "..."}],
+  "sources": [{"label": "Example source", "url": "https://example.com/page"}],
+  "refs": ["03-example-lead.md", "k:123"],
+  "ideas": [{"idea": "Reference -> our localized version", "market": "The named market", "total": 30,
+             "lines": {"demand": 0, "problem": 5, "fit": 6, "wedge": 6, "market": 6, "future": 4, "moat": 2, "whitespace": 1},
+             "note": "One line", "mover_id": "an-existing-mover-id"}]
+}]}
+```
+
+- `outcome` is `makes_list` (an idea at 40 or more), `below_cutoff` (scored, none at 40), `no` (a verdict
+  without a score), `replaced` (folded into another run) or `input` (a long list that fed other runs).
+- Every idea is in, **including those under 40**: this page is where they are kept. `lines` must add up to
+  `total`; leave `lines` out only when the source recorded just the total.
+- Ideas at 40 or more also go to the desk queue as movers (`ingest.py movers`); give the idea that mover's
+  `mover_id` so the page links them. An unknown `mover_id` is reported and left unlinked.
+- Plain text only, numbers with their source in the write-up; no customer names or customer data.
+- A run sent again replaces the stored one, ideas included. The script verifies every run is stored with its
+  ideas and that the page shows nothing to a browser that is not unlocked; `--list` prints what is stored.
 
 ## When something is wrong
 

@@ -10,12 +10,14 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     new RegExp(`^editions/${DATE}$`), // what an edition holds, for verification
     /^movers$/, // every mover, so a run can match stories to them
     /^movers\/feedback$/, // the founders' votes and stages, so a run learns what they want
+    /^research$/, // the research runs stored, for verification
   ],
   POST: [
     /^runs$/,
     new RegExp(`^runs/${UUID}/(items|finish)$`),
     /^movers$/, // propose, add or update movers
     new RegExp(`^movers/${MOVER}/(link|archive|notes)$`), // notes: the founders' take or score only
+    /^research$/, // record research runs for the founders' Research page
   ],
 };
 

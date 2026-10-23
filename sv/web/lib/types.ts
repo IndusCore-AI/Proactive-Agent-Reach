@@ -204,3 +204,47 @@ export interface DeskUpdate extends DeskEvent {
   mover_kind: MoverKind;
   status: MoverStatus;
 }
+
+/** The founders' Research page: each research run with its verdict, method,
+ * findings and sources, and every idea it scored (including those under the
+ * cutoff, which never reach the queue). */
+export type ResearchOutcome = 'makes_list' | 'below_cutoff' | 'no' | 'replaced' | 'input';
+
+export interface ResearchIdea {
+  position: number;
+  idea: string;
+  market: string;
+  total: number;
+  /** null when only the total was recorded */
+  lines: Record<RubricLine, number> | null;
+  note: string | null;
+  /** set when the idea became a mover on the desk */
+  mover: { id: string; name: string; status: MoverStatus } | null;
+}
+
+export interface ResearchFinding {
+  group: string | null;
+  title: string | null;
+  text: string;
+}
+
+export interface ResearchRun {
+  id: string;
+  title: string;
+  run_date: string;
+  outcome: ResearchOutcome;
+  verdict: string;
+  summary: string | null;
+  method: string | null;
+  findings: ResearchFinding[];
+  sources: { label: string; url: string }[];
+  refs: string[];
+  updated_by: string;
+  updated_at: string;
+  ideas: ResearchIdea[];
+}
+
+export interface ResearchList {
+  cutoff: number;
+  runs: ResearchRun[];
+}

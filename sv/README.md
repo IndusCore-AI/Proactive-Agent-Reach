@@ -133,6 +133,14 @@ the day's strongest signals (a round, a public revenue figure, a chart jump, unu
 votes and reasons with `ingest.py feedback` first, so the founders' calls steer what gets found next, and the
 script refuses a proposal for anything already on the desk (same id, name or site).
 
+**Research.** `/sv/movers/research` (founders only; anyone else gets a 404) keeps every research run: a prompt
+from a founders' call, a lead, a rerun on new sources. Each run has its verdict, how it was found, what it found
+and its sources, and every idea it scored on the rubric, including the ones under the 40 cutoff that never
+reach the queue. The page ranks all ideas with the cutoff drawn in, filters by run, and links an idea to its
+mover on the desk when it became one. Runs live in `research_runs` and `research_ideas` (migration 005), are
+recorded with `ingest.py research <file.json>` (a run sent again replaces the stored one) and are served only by
+`/v1/private/research`. The write-ups' data files stay outside the repo.
+
 **Public facts, private take.**
 
 - Everyone sees each mover's neutral facts: what it is, its traction (every line with its source and the date

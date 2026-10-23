@@ -7,7 +7,7 @@ import { cache } from 'react';
 import { currentFounder } from './founders';
 import type {
   DeskDetail, DeskList, DeskUpdate, Feed, Item, ItemDetail, MoverDetail, MoverKind, MoverList, MoverStage, MoverStatus,
-  MoverUpdate,
+  MoverUpdate, ResearchList,
 } from './types';
 
 // The VM API is reachable only through a Cloudflare quick tunnel whose
@@ -225,6 +225,11 @@ export const getDeskMover = cache((id: string): Promise<DeskDetail | null> => de
 
 export function getDeskUpdates(limit = 100): Promise<{ updates: DeskUpdate[] } | null> {
   return deskGet(`/v1/private/updates?limit=${limit}`);
+}
+
+/** Every research run and the ideas it scored; null when it cannot be shown. */
+export function getResearch(): Promise<ResearchList | null> {
+  return deskGet('/v1/private/research');
 }
 
 /** A vote, stage change or status change from the desk. Returns the API's
