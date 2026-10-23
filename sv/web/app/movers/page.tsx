@@ -246,6 +246,9 @@ async function DeskView({ sp, me }: { sp: SP; me: FounderKey }) {
             <div className="section-head">
               <h2 id="queue-head">Waiting for a decision</h2>
               <span>Proposed by a run or a founder. Best fit first. Nobody else sees these.</span>
+              <Link className="more-link" href="/movers/research">
+                Research
+              </Link>
             </div>
             {queue.movers.length ? (
               <ul className="queue">

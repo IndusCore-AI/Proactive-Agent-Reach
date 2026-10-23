@@ -27,6 +27,13 @@ test('mover paths are allowed with the right method only', () => {
   assert.equal(ingestPathAllowed('POST', ['movers', 'feedback']), false);
 });
 
+test('research can be recorded and listed, nothing more', () => {
+  assert.equal(ingestPathAllowed('POST', ['research']), true);
+  assert.equal(ingestPathAllowed('GET', ['research']), true);
+  assert.equal(ingestPathAllowed('GET', ['research', '2026-10-22-example-lead']), false);
+  assert.equal(ingestPathAllowed('POST', ['research', '2026-10-22-example-lead', 'delete']), false);
+});
+
 test('anything else is refused', () => {
   assert.equal(ingestPathAllowed('GET', ['private', 'movers']), false);
   assert.equal(ingestPathAllowed('POST', ['runs', 'not-a-uuid', 'items']), false);
