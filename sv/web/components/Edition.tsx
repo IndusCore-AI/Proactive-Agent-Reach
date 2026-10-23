@@ -1,10 +1,11 @@
 import Link from 'next/link';
 
-import { CATEGORIES, CATEGORY_LABEL, longDate, shortDate, storyPath, timePT, todayPT, abs, SITE_NAME } from '@/lib/format';
+import { CATEGORIES, CATEGORY_LABEL, longDate, shortDate, storyPath, todayPT, abs, SITE_NAME } from '@/lib/format';
 import type { Category, Feed, Item } from '@/lib/types';
 
 import { HomeLink, JsonLd } from './Chrome';
 import { Card, CompactRow, EmbedCard, HeroCard } from './Cards';
+import { LocalTime } from './LocalTime';
 
 export const PAGE_SIZE = 100;
 
@@ -130,7 +131,12 @@ export function EditionView({ feed, basePath, category, source, page, notice }: 
           <p className="edition-meta">
             <span className={`fresh${isToday ? '' : ' stale'}`}>
               {totalAll} {totalAll === 1 ? 'story' : 'stories'}
-              {run?.finished_at ? ` · updated ${timePT(run.finished_at).replace(/^[A-Z][a-z]{2} \d+, /, '')}` : ''}
+              {run?.finished_at ? (
+                <>
+                  {' · updated '}
+                  <LocalTime ts={run.finished_at} style="time" />
+                </>
+              ) : null}
             </span>
           </p>
         </div>

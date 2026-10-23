@@ -61,7 +61,7 @@ export function Footer() {
           Every story links to its original source. We store titles, dates and short source excerpts only, never the
           articles or their media. Funding figures are shown as the source states them.
         </p>
-        <p>Compiled daily with Claude Code by the IndusCore team. Times are Pacific.</p>
+        <p>Compiled daily with Claude Code by the IndusCore team. Editions follow Pacific dates; times show in your own time zone.</p>
       </div>
     </footer>
   );

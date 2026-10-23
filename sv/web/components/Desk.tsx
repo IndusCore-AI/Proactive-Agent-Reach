@@ -1,8 +1,9 @@
 import Link from 'next/link';
 
 import { CopyPrompt } from '@/components/CopyPrompt';
+import { LocalTime } from '@/components/LocalTime';
 import { MoverLogo } from '@/components/MoverLogo';
-import { MOVER_KIND_LABEL, moverPath, shortDate, timePT } from '@/lib/format';
+import { MOVER_KIND_LABEL, moverPath, shortDate } from '@/lib/format';
 import { RUBRIC, band, type NextStep } from '@/lib/nextSteps';
 import { founderName } from '@/lib/unlock';
 import type { DeskEvent, DeskMover, DeskUpdate, MoverStage, MoverStatus, Score, Vote } from '@/lib/types';
@@ -23,10 +24,6 @@ export const STATUS_LABEL: Record<MoverStatus, string> = { proposed: 'Waiting fo
 
 function action(id: string, name: 'vote' | 'stage' | 'status'): string {
   return `/sv/api/founders/movers/${id}/${name}`;
-}
-
-function when(ts: string): string {
-  return timePT(ts);
 }
 
 function Arrow({ up }: { up: boolean }) {
@@ -227,7 +224,7 @@ export function DecisionPanel({ mover, me, failed }: { mover: DeskMover; me: str
                 {founderName(v.voter)}
               </span>
               {v.reason ? <q>{v.reason}</q> : <span className="muted">no reason given</span>}
-              <time dateTime={v.at}>{when(v.at)}</time>
+              <LocalTime ts={v.at} />
             </li>
           ))}
         </ul>
@@ -341,7 +338,7 @@ export function History({ events }: { events: DeskEvent[] }) {
       <ol>
         {events.map((e) => (
           <li key={e.id}>
-            <time dateTime={e.at}>{when(e.at)}</time>
+            <LocalTime ts={e.at} />
             <span>
               <strong>{founderName(e.actor)}</strong> {eventText(e)}
             </span>
@@ -358,7 +355,7 @@ export function DeskUpdates({ updates }: { updates: DeskUpdate[] }) {
     <ol className="updates">
       {updates.map((u) => (
         <li key={u.id} className={u.private ? 'private' : undefined}>
-          <time dateTime={u.at}>{when(u.at)}</time>
+          <LocalTime ts={u.at} />
           <span>
             <strong>{founderName(u.actor)}</strong> {eventText(u)}{' '}
             {u.status === 'archived' ? <span className="muted">{u.name}</span> : <Link href={moverPath(u.mover_id)}>{u.name}</Link>}

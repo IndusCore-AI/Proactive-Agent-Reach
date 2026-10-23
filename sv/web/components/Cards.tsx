@@ -1,11 +1,12 @@
 import Link from 'next/link';
 
-import { CATEGORY_LABEL, CLAIM_LABEL, compactNumber, hostOf, shortDate, storyPath, timePT } from '@/lib/format';
+import { CATEGORY_LABEL, CLAIM_LABEL, compactNumber, hostOf, shortDate, storyPath } from '@/lib/format';
 import type { Item, Mention } from '@/lib/types';
 
 import { getXPost } from '@/lib/xpost';
 
 import { XEmbed, YouTubeEmbed } from './Embeds';
+import { LocalTime } from './LocalTime';
 import { Thumb } from './Thumb';
 
 /** The biggest discussion of the story (HN points first), if any. */
@@ -35,7 +36,7 @@ function Meta({ item, showEdition }: { item: Item; showEdition?: boolean }) {
   return (
     <div className="meta">
       <span className="pub">{item.source_name}</span>
-      <time dateTime={when}>{timePT(when).replace(/^[A-Z][a-z]{2} \d+, /, '')}</time>
+      <LocalTime ts={when} style="time" />
       {showEdition && item.feed_date && <Link href={`/${item.feed_date}`}>{shortDate(item.feed_date)}</Link>}
       {talk && (
         <a className="talk" href={talk.url} rel="noopener" target="_blank" title={`Discussion on ${talk.label}`}>

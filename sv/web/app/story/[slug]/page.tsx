@@ -5,11 +5,12 @@ import { notFound, permanentRedirect } from 'next/navigation';
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { YouTubeEmbed } from '@/components/Embeds';
 import { Card, XPost } from '@/components/Cards';
+import { LocalTime } from '@/components/LocalTime';
 import { Thumb } from '@/components/Thumb';
 import { ApiError, getItem } from '@/lib/api';
 import {
   CATEGORY_LABEL, CLAIM_LABEL, SITE_NAME, abs, compactNumber, fundingLine, hostOf, idFromSlug, longDate, moverPath,
-  storyPath, tagLabel, timePT,
+  storyPath, tagLabel,
 } from '@/lib/format';
 import type { ItemDetail } from '@/lib/types';
 
@@ -123,7 +124,7 @@ export default async function StoryPage({ params }: { params: Params }) {
           <p className="byline">
             <span className="pub">{item.source_name}</span>
             {item.author && <span>by {item.author}</span>}
-            {item.published_at && <time dateTime={item.published_at}>{timePT(item.published_at)}</time>}
+            {item.published_at && <LocalTime ts={item.published_at} />}
           </p>
           {item.summary && (
             <p className="context">
@@ -172,9 +173,11 @@ export default async function StoryPage({ params }: { params: Params }) {
               {item.source_name} ({hostOf(item.url)})
             </dd>
             <dt>Published</dt>
-            <dd>{item.published_at ? timePT(item.published_at) : 'The source gives no date'}</dd>
+            <dd>{item.published_at ? <LocalTime ts={item.published_at} /> : 'The source gives no date'}</dd>
             <dt>First seen here</dt>
-            <dd>{timePT(item.discovered_at)}</dd>
+            <dd>
+              <LocalTime ts={item.discovered_at} />
+            </dd>
             {item.feed_date && (
               <>
                 <dt>Edition</dt>
@@ -189,7 +192,7 @@ export default async function StoryPage({ params }: { params: Params }) {
             {mentions.some((m) => m.points != null || m.comments != null) && (
               <>
                 <dt>Engagement</dt>
-                <dd>As shown by each platform when we last looked ({timePT(mentions[0].observed_at)}).</dd>
+                <dd>As shown by each platform when we last looked (<LocalTime ts={mentions[0].observed_at} />).</dd>
               </>
             )}
             {why && (

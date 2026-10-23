@@ -3,10 +3,11 @@ import Link from 'next/link';
 
 import { Bar, HomeLink } from '@/components/Chrome';
 import { DeskUpdates } from '@/components/Desk';
+import { LocalTime } from '@/components/LocalTime';
 import { FoundersBar } from '@/components/Movers';
 import { getDeskUpdates, getMoverUpdates } from '@/lib/api';
 import { currentFounder } from '@/lib/founders';
-import { abs, moverPath, timePT } from '@/lib/format';
+import { abs, moverPath } from '@/lib/format';
 import type { MoverUpdate } from '@/lib/types';
 
 // What changed on Movers to watch. Everyone sees movers added and new stories;
@@ -62,7 +63,7 @@ export default async function Updates() {
             <ol className="updates">
               {pub.updates.map((u) => (
                 <li key={u.id}>
-                  <time dateTime={u.at}>{timePT(u.at)}</time>
+                  <LocalTime ts={u.at} />
                   <span>
                     <Link href={u.kind === 'news' ? `${moverPath(u.mover_id)}#news` : moverPath(u.mover_id)}>{u.name}</Link> {line(u)}
                   </span>
