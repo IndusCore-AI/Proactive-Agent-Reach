@@ -9,6 +9,8 @@ across sources, pre-scores, and writes:
 
   DIR/candidates.json   ranked candidates for Claude Code to curate
   DIR/sources.json      per-source status: ok, fetched, in window, error
+  DIR/chart-movers.json App Store chart movers (charts.py): candidates for
+                        proposed movers, never news items (--no-charts skips)
 
 A failing source is recorded and skipped; the run carries on. Standard
 library only, so it runs on any laptop with Python 3.10+.
@@ -24,6 +26,7 @@ import re
 import ssl
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -38,6 +41,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import svlib  # noqa: E402
 
+# Run as a script, this module is __main__; helpers that `import collect`
+# (social_login.py) must get this same module, not a second copy.
+sys.modules.setdefault("collect", sys.modules[__name__])
+
 UA = "Mozilla/5.0 (compatible; KeepingUpSV/1.0; +https://induscore.site/sv/about)"
 SKILL_DIR = Path(__file__).resolve().parents[1]
 NS = {
@@ -45,6 +52,7 @@ NS = {
     "dc": "http://purl.org/dc/elements/1.1/",
     "content": "http://purl.org/rss/1.0/modules/content/",
     "media": "http://search.yahoo.com/mrss/",
+    "yt": "http://www.youtube.com/xml/schemas/2015",
 }
 
 # ---------------------------------------------------------------- fetching
@@ -259,6 +267,55 @@ def parse_feed(raw: bytes) -> list[dict]:
     return out
 
 
+YT_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
+_YT_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _int(s: str | None) -> int | None:
+    try:
+        return int(s) if s not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def parse_youtube_feed(raw: bytes) -> list[dict]:
+    """A YouTube channel's public Atom feed (the latest ~15 uploads) as
+    {video_id, url, title, published, description, channel, views, likes,
+    thumbnail, short}. The URL is always the watch page, so the same video
+    found by another source merges with it and the site embeds it."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise SourceError(f"feed is not valid XML ({e})")
+    if not root.tag.endswith("feed"):
+        raise SourceError("not a YouTube channel feed")
+    out = []
+    for it in root.iter(f"{{{NS['atom']}}}entry"):
+        vid = _text(it.find("yt:videoId", NS))
+        if not _YT_VIDEO_ID.match(vid):
+            continue
+        link = next((ln.get("href", "") for ln in it.findall("atom:link", NS) if ln.get("rel", "alternate") == "alternate"), "")
+        group = it.find("media:group", NS)
+        desc = _text(group.find("media:description", NS)) if group is not None else ""
+        thumb = group.find("media:thumbnail", NS) if group is not None else None
+        stats = group.find("media:community/media:statistics", NS) if group is not None else None
+        rating = group.find("media:community/media:starRating", NS) if group is not None else None
+        thumb_url = (thumb.get("url", "") if thumb is not None else "").replace("http://", "https://", 1)
+        out.append({
+            "video_id": vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "title": _text(it.find("atom:title", NS)),
+            "published": parse_date(_text(it.find("atom:published", NS))),
+            "description": desc,
+            "channel": _text(it.find("atom:author/atom:name", NS)),
+            "views": _int(stats.get("views")) if stats is not None else None,
+            "likes": _int(rating.get("count")) if rating is not None else None,
+            "thumbnail": thumb_url if thumb_url.startswith("https://") else None,
+            "short": "/shorts/" in link,
+        })
+    return out
+
+
 # ---------------------------------------------------------------- classification
 
 RELEVANT = re.compile(
@@ -269,6 +326,12 @@ RELEVANT = re.compile(
     r"y ?combinator|yc|saas|developers?|api|sdk|robots?|robotics|humanoid|autonomous|self-driving|fintech|"
     r"stablecoin|crypto|data ?cent(er|re)s?|semiconductor|tsmc|quantum|cybersecurity|breach|antitrust|"
     r"show hn|launch hn|ask hn)\b", re.I)
+# Chinese has no word boundaries between characters and Latin letters, so the
+# Chinese sources (硅谷101, 小红书) need their own list.
+RELEVANT_ZH = re.compile(
+    r"([一-鿿]\s?AI(?![A-Za-z])|(?<![A-Za-z])AI\s?[一-鿿]|"
+    r"创业|创始人|融资|估值|投资|出海|上市|收购|发布|模型|智能体|机器人|芯片|算力|独立开发|副业|工具|产品|"
+    r"硅谷|科技|开源|应用|电商)")
 
 CATEGORY_RULES = [
     ("acquisition", re.compile(r"\b(acquires?|acquired|acquisition|acqui-?hires?|to buy|buys|agrees to buy|merger|merges|takeover)\b", re.I)),
@@ -369,7 +432,7 @@ def candidate(src: dict, *, url: str, title: str, published: datetime | None, te
         "image_url": image_url if image_url and image_url.startswith("https://") else None,
         "image_kind": image_kind if image_url else None,
         "weight": src["weight"],
-        "relevant": bool(RELEVANT.search(blob)),
+        "relevant": bool(RELEVANT.search(blob) or RELEVANT_ZH.search(blob)),
         **({"extra": extra} if extra else {}),
     }
 
@@ -486,16 +549,135 @@ def collect_yc(src: dict, start: datetime, end: datetime) -> tuple[list[dict], i
     return out, fetched
 
 
-def collect_reddit(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
-    entries = parse_feed(fetch(src["url"], tries=2))
+def collect_youtube(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
+    """One channel's public upload feed (no key). Shorts are dropped unless the
+    source keeps them ("shorts": true): on interview channels they are clips of
+    a full episode. Views and likes are the counts YouTube shows at collection."""
+    entries = parse_youtube_feed(fetch(YT_FEED.format(src["channel_id"])))
     out = []
     for e in entries:
+        if not e["published"] or not (start <= e["published"] <= end):
+            continue
+        if e["short"] and not src.get("shorts"):
+            continue
+        engagement = {k: e[k] for k in ("views", "likes") if e[k] is not None}
+        c = candidate(src, url=e["url"], title=e["title"], published=e["published"], text=e["description"],
+                      author=e["channel"], source_name=src.get("channel_name") or e["channel"] or src["name"],
+                      engagement=engagement, image_url=e["thumbnail"],
+                      extra={"video_id": e["video_id"], "short": e["short"], "channel_id": src["channel_id"]})
+        if c:
+            out.append(c)
+    return out, len(entries)
+
+
+REDDIT_UA = "KeepingUpSV/1.1 (once-a-day startup digest; +https://induscore.site/sv/about)"
+
+
+class RedditFetcher:
+    """The one way a run reads Reddit, shared by every Reddit source.
+
+    Reddit lets anonymous readers make very few requests (in October 2026 its
+    headers allowed one a minute), so this reader is deliberately slow and
+    gives up early:
+      - a descriptive User-Agent and one request at a time;
+      - it waits as long as Reddit's X-Ratelimit-Reset header asks before the
+        next request (at most MAX_WAIT seconds), and MIN_GAP seconds otherwise;
+      - on a 429 it waits Retry-After (or the reset) and retries once; a second
+        429 fails that source and every later Reddit source in the run fails at
+        once with "not tried", so nothing loops. The edition shows each failure.
+    No login, no API keys, no alternate hosts."""
+
+    MIN_GAP = 2.0
+    MAX_WAIT = 70.0
+
+    def __init__(self, opener=None, sleep=time.sleep, clock=time.monotonic) -> None:
+        self._open = opener or self._urlopen
+        self._sleep, self._clock = sleep, clock
+        self._lock = threading.Lock()
+        self._next_ok = 0.0
+        self.blocked: str | None = None
+
+    @staticmethod
+    def _urlopen(url: str) -> tuple[int, dict, bytes]:
+        req = urllib.request.Request(url, headers={"User-Agent": REDDIT_UA, "Accept": "application/atom+xml, */*"})
+        try:
+            with urllib.request.urlopen(req, timeout=25, context=SSL_CONTEXT) as resp:
+                return resp.status, dict(resp.headers), resp.read(4_000_000)
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers or {}), b""
+
+    @staticmethod
+    def _header(headers: dict, name: str) -> str:
+        for k, v in headers.items():
+            if k.lower() == name:
+                return str(v).strip()
+        return ""
+
+    def _pace(self, headers: dict) -> float:
+        """Seconds to wait before the next request, from Reddit's own headers."""
+        try:
+            remaining = float(self._header(headers, "x-ratelimit-remaining") or "1")
+            reset = float(self._header(headers, "x-ratelimit-reset") or "0")
+        except ValueError:
+            return self.MIN_GAP
+        return min(reset + 1, self.MAX_WAIT) if remaining < 1 else self.MIN_GAP
+
+    def get(self, url: str) -> bytes:
+        with self._lock:
+            if self.blocked:
+                raise SourceError(f"not tried: {self.blocked}")
+            for attempt in (1, 2):
+                wait = self._next_ok - self._clock()
+                if wait > 0:
+                    self._sleep(wait)
+                try:
+                    status, headers, body = self._open(url)
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    self._next_ok = self._clock() + self.MIN_GAP * 2
+                    if attempt == 2:
+                        raise SourceError(f"{type(e).__name__}: {getattr(e, 'reason', e)} for www.reddit.com")
+                    continue
+                self._next_ok = self._clock() + self._pace(headers)
+                if status == 200:
+                    return body
+                if status == 429:
+                    if attempt == 2:
+                        self.blocked = "Reddit rate-limited this run (HTTP 429 twice); the next run tries again"
+                        raise SourceError("HTTP 429 from Reddit: rate-limited, waited and retried once")
+                    retry = self._header(headers, "retry-after")
+                    wait = float(retry) if retry.isdigit() else self._pace(headers)
+                    self._next_ok = self._clock() + min(max(wait, self.MIN_GAP), self.MAX_WAIT)
+                    continue
+                if status in (500, 502, 503, 504) and attempt == 1:
+                    continue
+                raise SourceError(f"HTTP {status} from Reddit" + (" (refused; not worked around)" if status in (401, 403) else ""))
+        raise SourceError("Reddit did not answer")  # not reached
+
+
+REDDIT = RedditFetcher()
+
+
+def reddit_url(src: dict) -> str:
+    """The source's feed: its subreddits' top posts of the day as one public RSS
+    feed (one request per source), or an explicit url."""
+    if src.get("subreddits"):
+        subs = "+".join(src["subreddits"])
+        return f"https://www.reddit.com/r/{subs}/top/.rss?t=day&limit={int(src.get('limit', 50))}"
+    return src["url"]
+
+
+def collect_reddit(src: dict, start: datetime, end: datetime) -> tuple[list[dict], int]:
+    entries = parse_feed(REDDIT.get(reddit_url(src)))
+    out = []
+    for rank, e in enumerate(entries, 1):
         if not e["published"] or not (start <= e["published"] <= end):
             continue
         text = html_to_text(e["html"])
         sub = re.search(r"/r/([A-Za-z0-9_]+)/", e["link"] or "")
         c = candidate(src, url=e["link"], title=e["title"], published=e["published"], text=text,
-                      source_name=f"r/{sub.group(1)}" if sub else "Reddit", category="discussion")
+                      source_name=f"r/{sub.group(1)}" if sub else "Reddit", category="discussion",
+                      engagement={"top_rank": rank, "of": len(entries)},
+                      extra={"subreddit": sub.group(1) if sub else None})
         if c:
             out.append(c)
     return out, len(entries)
@@ -514,6 +696,15 @@ def prescore(c: dict, end: datetime) -> dict:
         engagement = 35 * min(1.0, math.log10(1 + eng["points"] + 0.5 * eng.get("comments", 0)) / math.log10(1 + 900))
     elif "votes" in eng:
         engagement = 35 * min(1.0, math.log10(1 + eng["votes"]) / math.log10(1 + 120))
+    elif "top_rank" in eng:
+        # a Reddit post: its place in the day's top list (RSS carries no scores)
+        engagement = 24 * max(0.0, 1 - (eng["top_rank"] - 1) / max(1, eng.get("of", 1)))
+    elif "views" in eng:
+        # a video (or an X post with a view count): 250k views inside the 48-hour window is as strong as a 900-point HN story
+        engagement = 35 * min(1.0, math.log10(1 + eng["views"]) / math.log10(1 + 250_000))
+    elif "likes" in eng:
+        # a 小红书 note: 20k likes inside a day is as strong as it gets
+        engagement = 35 * min(1.0, math.log10(1 + eng["likes"]) / math.log10(1 + 20_000))
     else:
         engagement = 12.0  # an editor (the publication) already chose it
     kind = {"funding": 10, "acquisition": 10, "launch": 6, "analysis": 2}.get(c["category"], 0)
@@ -575,6 +766,12 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
             cands, fetched = collect_yc(src, start, end)
         elif src["kind"] == "reddit":
             cands, fetched = collect_reddit(src, start, end)
+        elif src["kind"] == "youtube":
+            cands, fetched = collect_youtube(src, start, end)
+        elif src["kind"] == "login":
+            import social_login  # noqa: E402  (optional: only when a login source is enabled)
+
+            cands, fetched = social_login.collect_login(src, start, end, LOGIN_PROBE)
         else:
             raise SourceError(f"unknown kind {src['kind']}")
         if src.get("filter"):
@@ -582,16 +779,50 @@ def run_source(src: dict, start: datetime, end: datetime, is_today: bool) -> tup
         return {"source": src["id"], "name": src["name"], "ok": True, "fetched": fetched, "in_window": len(cands),
                 "seconds": round(time.time() - t0, 1), "error": None}, cands
     except Exception as e:  # one bad source never stops the run
-        return {"source": src["id"], "name": src["name"], "ok": False, "fetched": 0, "in_window": 0,
-                "seconds": round(time.time() - t0, 1), "error": str(e)[:280] or type(e).__name__}, []
+        status = {"source": src["id"], "name": src["name"], "ok": False, "fetched": 0, "in_window": 0,
+                  "seconds": round(time.time() - t0, 1), "error": str(e)[:280] or type(e).__name__}
+        if type(e).__name__ == "Skipped":   # skipped on purpose (needs the founder's login): not a failure
+            status["skipped"] = True
+        return status, []
+
+
+# Sources that must not run in parallel with each other share a lane: one
+# worker reads them in order (Reddit allows one request at a time).
+LANES = {"reddit": "reddit", "login": "browser"}
+LOGIN_PROBE = False   # --login-sources: try the founder's logged-in browser even when doctor cannot confirm it
+
+
+def run_all(sources: list[dict], start: datetime, end: datetime, is_today: bool) -> list[tuple[dict, list[dict]]]:
+    """Every source, in sources.json order. Laned sources run one after another
+    in a single worker (started first, as they are the slowest); the rest run
+    in parallel."""
+    lanes: dict[str, list[dict]] = {}
+    solo: list[list[dict]] = []
+    for s in sources:
+        lane = LANES.get(s["kind"])
+        if lane:
+            lanes.setdefault(lane, []).append(s)
+        else:
+            solo.append([s])
+    groups = list(lanes.values()) + solo
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        done = list(pool.map(lambda group: [run_source(s, start, end, is_today) for s in group], groups))
+    by_id = {r[0]["source"]: r for group in done for r in group}
+    return [by_id[s["id"]] for s in sources]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", help="edition date YYYY-MM-DD (default: today in Pacific time)")
     ap.add_argument("--out", help="output directory (default: <tmp>/keeping-up-sv/<date>)")
-    ap.add_argument("--only", help="comma-separated source ids to run")
+    ap.add_argument("--only", help="comma-separated source ids to run (add 'charts' to include the chart movers)")
+    ap.add_argument("--no-charts", action="store_true", help="skip the App Store chart movers")
+    ap.add_argument("--login-sources", action="store_true",
+                    help="let the 小红书 and X sources use your own logged-in Chrome (OpenCLI) even when agent-reach "
+                         "doctor cannot confirm the login; one read-only search checks it first")
     args = ap.parse_args()
+    global LOGIN_PROBE
+    LOGIN_PROBE = args.login_sources
 
     today = svlib.today_pt()
     day = date.fromisoformat(args.date) if args.date else today
@@ -601,12 +832,14 @@ def main() -> None:
     out = Path(args.out) if args.out else Path(tempfile.gettempdir()) / "keeping-up-sv" / day.isoformat()
     out.mkdir(parents=True, exist_ok=True)
 
-    sources = [s for s in json.loads((SKILL_DIR / "sources.json").read_text())["sources"] if s.get("enabled", True)]
+    config = json.loads((SKILL_DIR / "sources.json").read_text())
+    sources = [s for s in config["sources"] if s.get("enabled", True)]
     if args.only:
         wanted = set(args.only.split(","))
         sources = [s for s in sources if s["id"] in wanted]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda s: run_source(s, start, end, day == today), sources))
+    if any(s["kind"] == "reddit" for s in sources):
+        print("Reddit is read one feed at a time, as slowly as its rate-limit headers ask (often a minute apart).")
+    results = run_all(sources, start, end, day == today)
 
     statuses = [r[0] for r in results]
     cands = merge([c for _, cs in results for c in cs])
@@ -617,11 +850,22 @@ def main() -> None:
     (out / "sources.json").write_text(json.dumps(statuses, indent=1))
 
     ok = sum(s["ok"] for s in statuses)
+    skipped = sum(bool(s.get("skipped")) for s in statuses)
     print(f"edition {day}  window {start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M} UTC")
-    print(f"sources ok {ok}/{len(statuses)}; candidates {len(cands)} (after merging duplicates)")
+    print(f"sources ok {ok}/{len(statuses)}" + (f" ({skipped} skipped: need a login)" if skipped else "")
+          + f"; candidates {len(cands)} (after merging duplicates)")
     for s in statuses:
-        print(f"  {'ok ' if s['ok'] else 'ERR'} {s['source']:<18} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
+        mark = "ok  " if s["ok"] else "skip" if s.get("skipped") else "ERR "
+        print(f"  {mark} {s['source']:<22} fetched {s['fetched']:>4}  in window {s['in_window']:>3}  {s['error'] or ''}")
     print(f"wrote {out / 'candidates.json'}")
+
+    if not args.no_charts and (not args.only or "charts" in args.only.split(",")):
+        import charts  # noqa: E402  (imported here: charts.py borrows fetch from this module)
+
+        try:
+            print(charts.summary_line(charts.run(out, fetch, config.get("charts"), today=today)))
+        except Exception as e:  # the edition never depends on the charts
+            print(f"chart movers: failed ({type(e).__name__}: {e}); the edition is not affected")
 
 
 if __name__ == "__main__":

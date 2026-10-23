@@ -8,8 +8,8 @@ import { Card, XPost } from '@/components/Cards';
 import { Thumb } from '@/components/Thumb';
 import { ApiError, getItem } from '@/lib/api';
 import {
-  CATEGORY_LABEL, CLAIM_LABEL, SITE_NAME, abs, compactNumber, fundingLine, hostOf, idFromSlug, longDate, storyPath,
-  tagLabel, timePT,
+  CATEGORY_LABEL, CLAIM_LABEL, SITE_NAME, abs, compactNumber, fundingLine, hostOf, idFromSlug, longDate, moverPath,
+  storyPath, tagLabel, timePT,
 } from '@/lib/format';
 import type { ItemDetail } from '@/lib/types';
 
@@ -155,6 +155,17 @@ export default async function StoryPage({ params }: { params: Params }) {
               </a>
             ))}
           </div>
+          {item.movers && item.movers.length > 0 && (
+            <ul className="chips mover-chips" aria-label="Movers this story is about">
+              {item.movers.map((m) => (
+                <li key={m.id}>
+                  <Link className="chip" href={moverPath(m.id)}>
+                    Mover: {m.name}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
           <dl>
             <dt>Source</dt>
             <dd>

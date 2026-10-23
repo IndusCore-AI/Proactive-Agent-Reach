@@ -1,0 +1,11 @@
+{"feed": {"title": "Top Free Apps", "id": "https://rss.marketingtools.apple.com/api/v2/us/apps/top-free/100/apps.json",
+ "country": "us", "updated": "Thu, 22 Oct 2026 21:48:33 +0000",
+ "results": [
+  {"artistName": "Example Bank", "id": "407558537", "name": "Example Bank Mobile", "releaseDate": "2010-12-13", "kind": "apps",
+   "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/a/100x100bb.png", "genres": [], "url": "https://apps.apple.com/us/app/example-bank-mobile/id407558537"},
+  {"artistName": "Example Market Ltd", "id": "632064380", "name": "Example Market: pre-loved", "releaseDate": "2013-04-11", "kind": "apps",
+   "genres": [], "url": "https://apps.apple.com/us/app/example-market/id632064380"},
+  {"artistName": "Broken", "id": "not-a-number", "name": "Skipped"},
+  {"artistName": "Example AI Inc.", "id": "6448311069", "name": "Example AI Chat", "releaseDate": "2026-09-30", "kind": "apps",
+   "genres": [], "url": "https://apps.apple.com/us/app/example-ai-chat/id6448311069"}
+ ]}}

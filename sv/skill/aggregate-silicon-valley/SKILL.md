@@ -2,8 +2,9 @@
 name: aggregate-silicon-valley
 description: >
   Run the daily aggregation for Keeping Up with Silicon Valley (induscore.site/sv): collect startup, funding,
-  launch, founder and VC stories from the configured sources, curate them, persist them to the VM database
-  through the site's ingest API, and verify they are live. Use when the user says /aggregate-silicon-valley
+  launch, founder and VC stories from the configured sources (news, essays, YouTube, Reddit, App Store chart
+  movers; 小红书 and X only with a founder's login), curate them, persist them to the VM database through the
+  site's ingest API, verify they are live, and propose up to 3 movers to the founders' desk. Use when the user says /aggregate-silicon-valley
   [YYYY-MM-DD], "run today's Silicon Valley feed", "aggregate the SV feed", "backfill the feed for <date>",
   "rerun the startup feed", or asks why an edition is missing or partial. Not for changing the site's code.
 ---
@@ -44,9 +45,25 @@ are safe.
 ```bash
 python3 -I scripts/collect.py --date D --out "${TMPDIR:-/tmp}/keeping-up-sv/D"
 ```
-It prints each source's status. Failed sources are expected sometimes (Reddit rate limits anonymous
-readers); the run continues and the failure is recorded on the edition. Do not retry a failed source more
-than once, and never work around a block (403, robots, login walls).
+It prints each source's status and writes three files to that directory: `candidates.json` (stories to
+curate), `sources.json` (each source's status, sent with the edition) and `chart-movers.json` (App Store
+chart movers for step 5; `--no-charts` skips them). What the sources need:
+
+- **No login**: news and launch feeds, Hacker News, YC Launches, investor and operator essays, company
+  blogs, YouTube channels (public channel feeds) and Apple's public chart feeds. These should all say `ok`.
+- **Best effort**: Reddit. Reddit allows anonymous readers about one request a minute, so its four sources
+  are read one after another, as slowly as Reddit's headers ask; a full run takes a few minutes longer than
+  before. A 429 is retried once, then that source fails and the others are marked "not tried". That is
+  expected sometimes; the failure is recorded on the edition and the run is `partial`.
+- **Needs a founder's login** (optional): 小红书 and X search through agent-reach's OpenCLI bridge, i.e. the
+  founder's own logged-in Chrome. They run only when `agent-reach doctor --json` reports the channel ok
+  through OpenCLI. Doctor never checks a login itself, so a founder who is logged in to xiaohongshu.com or
+  x.com in Chrome can add `--login-sources` to the collect command: one read-only search proves the login
+  first. Otherwise they print `skip` with "skipped: needs login (run agent-reach configure)"; that is
+  recorded on the edition and does not make the run partial. Never log in for the founder, never export
+  or store cookies, never work around a captcha.
+
+Do not retry a failed source more than once, and never work around a block (403, robots, login walls).
 
 **2. Curate.** Read `candidates.json` (ranked by a heuristic `score`). Write `curated.json` in the same
 directory: `{"items": [...]}`. Aim for the best 25–45 stories; on a quiet day fewer is right. Never
@@ -83,6 +100,18 @@ For each kept candidate, start from its fields and fix them:
   `score_detail.why` (one plain sentence a reader would understand, e.g. "Largest disclosed AI round this
   week; covered by three outlets."). Keep the rest of `score_detail`.
 - `embed_url`: only if the story *is* an X post or YouTube video (the site uses the platforms' own embeds).
+  YouTube candidates and X candidates from the login search already have the right URL; keep it.
+- **YouTube videos** (sources `yt-*`): keep interviews and talks with a clear startup, product or investing
+  angle; drop clips, promos and off-topic episodes. `analysis`/`opinion` for investor and founder talks;
+  `discussion`/`unverified` for founder case studies with revenue claims (Starter Story). The excerpt is the
+  channel's own description. To judge a video you are unsure about, you may read its subtitles
+  (`yt-dlp --skip-download --write-auto-subs --sub-langs "en.*,zh.*" -o "$DIR/subs/%(id)s" <url>`, the
+  agent-reach YouTube channel). Use them only to decide and to write a summary grounded in what is said;
+  never put a transcript into `curated.json`, the database or a summary longer than the usual two
+  sentences, and delete `$DIR/subs` before you finish.
+- **Reddit and 小红书/X posts** are `discussion` with `claim_status: unverified`: any growth or revenue
+  figure in them is the poster's claim. A 小红书 candidate's `extra.open_url` (with the session's
+  `xsec_token`) is for you to open while curating; the item's `url` stays the bare note URL.
 - Copy `url`, `source`, `source_name`, `published_at`, `author`, `mentions` from the candidate. Drop the
   helper fields (`id`, `found_in`, `weight`, `relevant`, `engagement`, `funding_hint`, `extra`,
   `engagement_self`); the ingest script ignores unknown fields anyway. Keep `image_url` and `image_kind`
@@ -108,16 +137,109 @@ embed URL; only use ones the script found or that the source itself links.
 ```bash
 python3 -I scripts/ingest.py --date D --curated "$DIR/curated.json" --sources "$DIR/sources.json"
 ```
-It starts a run, sends the items, finishes the run with every source's status (`complete` only when every
-source worked and nothing was rejected, otherwise `partial`), then checks the database holds every story
+It starts a run, sends the items, finishes the run with every source's status (`complete` when every
+source worked or was skipped for want of a login and nothing was rejected, otherwise `partial`), then checks the database holds every story
 and the public page `https://induscore.site/sv/D` shows the top ones. Exit code 0 means both checks passed.
 If items are rejected, read the reason, fix `curated.json`, and rerun the same command: reruns update in
 place and never duplicate.
 
-**5. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
-edition, inserted/updated/merged/rejected, sources that worked and those that failed (with the error),
-whether the database and page checks passed, and the run status (`complete` or `partial`). Say plainly if
-anything failed.
+**5. Propose movers (at most 3).** Every run feeds the founders' desk (see "Movers to watch" below). Spend
+a few minutes here; zero proposals is a fine answer on a weak day.
+
+a. Read the founders' calls first: `python3 -I scripts/ingest.py feedback` (votes with reasons, stage,
+   status, score) and `python3 -I scripts/ingest.py movers --list` (every id, including passed and archived).
+b. Gather signals: `chart-movers.json` in the run directory (apps rising in a country's chart, apps that
+   work abroad but not in the US, US hits missing in India and Southeast Asia), plus the strongest signals
+   in today's candidates: a funding round, a revenue figure a founder states in public (MRR, ARR), a chart
+   jump, fast GitHub star growth, a post or video with unusual engagement (HN points, views, likes, a top
+   Reddit post of the day).
+c. Pick at most 3 that fit the founders' context: they build software for manufacturing, e-commerce and
+   their suppliers, in India, Southeast Asia, Europe, Australia and New Zealand. Good picks: something that
+   works in one market and is missing in theirs, a product their customers' world could copy or localize,
+   a tool or skill they could use themselves.
+d. Let the votes steer: more like the movers they upvoted or moved to researching or building; nothing like
+   the ones they passed or downvoted; read every vote reason and follow it (a reason beats these defaults).
+e. Never propose a mover that already exists: no existing id, name or site, whatever its status.
+f. For each pick, open the pages you cite, then write one file under `${TMPDIR:-/tmp}/keeping-up-sv/` with
+   the shape shown under "Movers to watch" and **no `status` field**:
+   - public facts only in the public fields, every traction line with a `source_url` you opened and the
+     `as_of` date the figure was true. For a chart signal, the line is the chart itself, e.g.
+     `{"label": "Top free iPhone apps, India", "value": "#7, new to the top 100", "source_url": "<the feed
+     URL from chart-movers.json>", "as_of": "<its snapshot date>"}`, and `url` is the app's own page;
+   - `notes.take` (why it matters for the founders, privately), and `learn` / `localize` when you can
+     support them;
+   - `notes.score`: the office-hours rubric, eight lines with their maximums (demand 25, problem 10, fit 15,
+     wedge 10, market 10, future 15, moat 10, whitespace 5) for one market you name in `notes.score.market`,
+     with a one-line verdict. Score honestly; if the total is under 40, do not propose it;
+   - `item_urls`: stories in today's edition about it, if any.
+g. Send them with `python3 -I scripts/ingest.py movers --propose <file.json>`. It refuses the whole file,
+   before sending anything, if it has more than 3 movers, a `status`, an id, name or site that already
+   exists, or a mover without a sourced traction line, a take or a score.
+
+**6. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
+edition, inserted/updated/merged/rejected, sources that worked, those that failed (with the error) and
+those skipped because they need a login, whether the database and page checks passed, and the run status
+(`complete` or `partial`). Then the movers you proposed (id, name, score, market, the signal behind it) or
+why you proposed none. Say plainly if anything failed.
+
+## Movers to watch
+
+`https://induscore.site/sv/movers` lists companies, apps and skills gaining traction, kept apart from the
+daily news. Behind the founders' unlock the same page is their **desk**: a queue of proposed movers, each with
+an office-hours score, votes (with reasons), a stage (new, researching, building, passed) and copyable next
+steps (an REA prompt, a build brief, a scoring prompt).
+
+**A run proposes movers; only a founder publishes.** A mover sent without `status` is `proposed`: it waits
+in the desk's queue and appears on no public page, feed, sitemap or story until a founder publishes it there.
+Send `"status": "watching"` only when a founder told you to put it straight on the list. Each daily run
+proposes at most 3 (step 5 of the run, always with `--propose`).
+
+**Before proposing**, read what the founders thought of the last ones:
+`python3 -I scripts/ingest.py feedback`. Propose more like the upvoted ones and the ones in "researching" or
+"building"; none like the passed or downvoted ones; read every vote's reason and follow it.
+
+**Linking stories**, after step 4: `python3 -I scripts/ingest.py movers --list` prints the existing movers.
+When a story you just published is clearly about one of them (the company raised, the app launched in a new
+market, the skill shipped a release), link it:
+`python3 -I scripts/ingest.py link <mover-id> <story-url> [<story-url> ...]`. Link only clear matches; a
+passing mention is not one. Missing stories are reported, never created.
+
+**When a founder asks to add or update one**, write a JSON file under `${TMPDIR:-/tmp}/keeping-up-sv/`
+(never in a repo, teamctx or chat) and run `python3 -I scripts/ingest.py movers <file.json>` (a run's own
+proposals use `movers --propose`, which also refuses existing movers). The file:
+
+```json
+{"movers": [{
+  "id": "example-robotics", "name": "Example Robotics", "kind": "company",
+  "url": "https://example.com", "one_liner": "Robot arms for small kitchens (max 200 chars).",
+  "summary": "Neutral facts only, max 800 chars.",
+  "traction": [{"label": "Restaurants live", "value": "120", "source_url": "https://example.com/blog/120", "as_of": "2026-10-01"}],
+  "markets_live": ["US", "UK"], "claim_status": "confirmed", "tags": ["robotics"],
+  "image_url": "https://example.com/logo.png", "image_kind": "logo",
+  "notes": {"take": "How it helps us", "learn": "What to learn", "localize": "Where to localize",
+            "score": {"lines": {"demand": 10, "problem": 6, "fit": 9, "wedge": 6, "market": 6, "future": 9, "moat": 4, "whitespace": 3},
+                      "market": "The named target market", "verdict": "One line: in or out, and why."}},
+  "item_urls": ["https://techcrunch.com/..."]
+}]}
+```
+
+- Everything except `notes` is **public** and indexed: what it is, its traction, its sources. Every traction
+  line needs a `source_url` (https) you actually opened and the date the figure was true; no source, no line
+  (at most 8). `claim_status` is `confirmed` (the company states it), `reported` or `unverified`.
+- `notes` is the founders' **private** take; it is shown only after the founders' unlock and never in public
+  HTML, the sitemap, RSS, llms.txt or JSON-LD. Write it only from what the founder told you or from research
+  you did and cited. Leaving a note field out keeps what is stored; `null` clears it.
+- `notes.score` is the office-hours rubric (teamctx k:878, unchanged) for the **localized** idea in one named
+  market: the eight lines with their maximums (demand 25, problem 10, fit 15, wedge 10, market 10, future 15,
+  moat 10, whitespace 5); the server adds up the total. Under 40 is below the cutoff: say so in the verdict.
+- To change only the take or the score later (after an office-hours run, say), put
+  `{"score": {...}}` (and/or take / learn / localize) in a file and run
+  `python3 -I scripts/ingest.py notes <mover-id> <file.json>`; the public facts stay as they are.
+- Reruns update by `id`. The script checks the file first, then verifies every mover is stored and that its
+  public page (for movers on the list) shows the name and **none** of the note text; exit code 0 means both
+  passed. Proposed movers have no public page to check.
+- `python3 -I scripts/ingest.py archive <mover-id>` stops watching one (it leaves the site; the founder can
+  restore it by sending it again with `"status": "watching"`).
 
 ## When something is wrong
 
@@ -127,6 +249,13 @@ anything failed.
 - `HTTP 403 invalid ingest token`: your token was rotated or revoked; redo the one-time setup.
 - A run that died midway stays `running` and is marked failed after 3 hours; just rerun the date.
 - Page check failed but DB check passed: the page cache refreshes within 5 minutes; open the page again.
+- Reddit sources `ERR ... HTTP 429` or `not tried: Reddit rate-limited this run`: expected some days. Do not
+  rerun collect just for Reddit; the next run tries again.
+- `skip xiaohongshu` / `skip x-search`: no confirmed login (see step 1). The edition is complete without
+  them.
+- `chart movers: N/24 feeds`: a few chart feeds time out some days; the lists use the ones that loaded, and
+  `chart-movers.json` names the missing ones. Snapshots live in `~/.local/state/keeping-up-sv/charts/`
+  (or `$KEEPING_UP_SV_STATE`); deleting them only means the next run has nothing to compare.
 
 More: `sv/README.md` in https://github.com/gaurpulkit/Proactive-Agent-Reach and the teamctx items tagged
 `keeping-up-sv`.

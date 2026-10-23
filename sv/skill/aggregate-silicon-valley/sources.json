@@ -1,5 +1,37 @@
 {
-  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit. enabled:false skips a source (disabled_reason says why).",
+  "_doc": "Sources read by collect.py. weight 0-20 = how much we trust and value the source. filter=true keeps only items that look like startup/tech-business news (general tech outlets). claim: default claim_status for items from that source. Add a source by appending an entry; kind is one of rss, hn, yc, reddit, youtube, login. youtube: channel_id is the UC... id of the channel (its public feed needs no key); shorts=true keeps Shorts (dropped by default). reddit: subreddits are read together as one public RSS feed of the day's top posts (one request per source, paced by Reddit's rate-limit headers; see RedditFetcher in collect.py). login: optional search on a platform with no public feed (platform xiaohongshu or twitter) through your own logged-in Chrome via agent-reach's OpenCLI bridge; it runs only when agent-reach doctor reports the channel usable (or with collect.py --login-sources) and is otherwise recorded as skipped. keywords are searched one at a time; search_args are passed to `opencli <site> search`. enabled:false skips a source (disabled_reason says why).",
+  "_doc_charts": "App Store chart movers (scripts/charts.py), run by collect.py after the sources. countries and charts: Apple's public top-100 feeds read each run; the thresholds are the three lists' rules. Snapshots stay in the local state directory, never in the repo.",
+  "charts": {
+    "countries": [
+      "us",
+      "in",
+      "gb",
+      "es",
+      "id",
+      "au",
+      "br",
+      "de",
+      "sg",
+      "my",
+      "ae",
+      "sa"
+    ],
+    "charts": [
+      "top-free",
+      "top-paid"
+    ],
+    "rise_places": 25,
+    "abroad_top": 50,
+    "abroad_min_countries": 3,
+    "home_top": 50,
+    "localize_in": [
+      "in",
+      "id",
+      "sg",
+      "my"
+    ],
+    "keep_days": 90
+  },
   "sources": [
     {
       "id": "hackernews",
@@ -225,6 +257,164 @@
       "disabled_reason": "Answers 403 to automated feed readers (checked 2026-10-22); we respect the block instead of working around it."
     },
     {
+      "id": "sam-altman",
+      "name": "Sam Altman",
+      "kind": "rss",
+      "url": "https://blog.samaltman.com/posts.atom",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "simon-willison",
+      "name": "Simon Willison",
+      "kind": "rss",
+      "url": "https://simonwillison.net/atom/entries/",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "elad-gil",
+      "name": "Elad Gil",
+      "kind": "rss",
+      "url": "https://blog.eladgil.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "benedict-evans",
+      "name": "Benedict Evans",
+      "kind": "rss",
+      "url": "https://www.ben-evans.com/benedictevans?format=rss",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "karpathy",
+      "name": "Andrej Karpathy",
+      "kind": "rss",
+      "urls": [
+        "https://karpathy.bearblog.dev/feed/",
+        "https://karpathy.github.io/feed.xml"
+      ],
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "dwarkesh",
+      "name": "Dwarkesh Patel",
+      "kind": "rss",
+      "url": "https://www.dwarkesh.com/feed",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "andrew-chen",
+      "name": "Andrew Chen",
+      "kind": "rss",
+      "url": "https://andrewchen.substack.com/feed",
+      "weight": 11,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "naval",
+      "name": "Naval",
+      "kind": "rss",
+      "url": "https://nav.al/feed",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "Answers 403 to the collector (checked 2026-10-22); we respect the block instead of working around it."
+    },
+    {
+      "id": "stripe-blog",
+      "name": "Stripe",
+      "kind": "rss",
+      "url": "https://stripe.com/blog/feed.rss",
+      "weight": 12,
+      "filter": false,
+      "category": "news",
+      "claim": "confirmed",
+      "tags": [
+        "fintech"
+      ]
+    },
+    {
+      "id": "interconnected",
+      "name": "Interconnected (Kevin Xu)",
+      "kind": "rss",
+      "url": "https://interconnected.blog/rss/",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "chinai",
+      "name": "ChinAI (Jeffrey Ding)",
+      "kind": "rss",
+      "url": "https://chinai.substack.com/feed",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "sajith-pai",
+      "name": "Sajith Pai (Blume Ventures)",
+      "kind": "rss",
+      "url": "https://sajithpai.substack.com/feed",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "vc"
+      ]
+    },
+    {
+      "id": "paul-graham",
+      "name": "Paul Graham",
+      "kind": "rss",
+      "url": "http://www.aaronsw.com/2002/feeds/pgessays.rss",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "enabled": false,
+      "disabled_reason": "paulgraham.com has no feed of its own. The only public feed of his essays (scraped by aaronsw.com) stops at 'Superlinear Returns' (2023) and has no dates (checked 2026-10-22). Hacker News carries new essays within hours."
+    },
+    {
       "id": "openai",
       "name": "OpenAI",
       "kind": "rss",
@@ -279,11 +469,228 @@
     },
     {
       "id": "reddit",
-      "name": "Reddit",
+      "name": "Reddit (startups, founders)",
       "kind": "reddit",
-      "url": "https://www.reddit.com/r/startups+SaaS+Entrepreneur+ycombinator+venturecapital/top/.rss?t=day&limit=40",
+      "subreddits": [
+        "startups",
+        "Entrepreneur",
+        "indiehackers",
+        "ycombinator",
+        "venturecapital"
+      ],
+      "limit": 40,
       "weight": 7,
       "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-builders",
+      "name": "Reddit (SaaS, side projects)",
+      "kind": "reddit",
+      "subreddits": [
+        "SaaS",
+        "SideProject"
+      ],
+      "limit": 30,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-ai",
+      "name": "Reddit (Claude, local LLMs)",
+      "kind": "reddit",
+      "subreddits": [
+        "ClaudeAI",
+        "LocalLLaMA"
+      ],
+      "limit": 30,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "reddit-india",
+      "name": "Reddit (Indian startups)",
+      "kind": "reddit",
+      "subreddits": [
+        "StartUpIndia",
+        "indianstartups"
+      ],
+      "limit": 25,
+      "weight": 7,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "yt-ycombinator",
+      "name": "Y Combinator (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UCcefcZRL2oaA_uBNeo5UOWg",
+      "weight": 13,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "yc"
+      ]
+    },
+    {
+      "id": "yt-a16z",
+      "name": "a16z (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UC9cn0TuPq4dnbTY-CBsm8XA",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "vc"
+      ]
+    },
+    {
+      "id": "yt-lennys-podcast",
+      "name": "Lenny's Podcast",
+      "kind": "youtube",
+      "channel_id": "UC6t1O76G0jYXOAoYCm153dA",
+      "weight": 12,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-greg-isenberg",
+      "name": "Greg Isenberg",
+      "kind": "youtube",
+      "channel_id": "UCPjNBjflYl0-HQtUvOx0Ibw",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-starter-story",
+      "name": "Starter Story",
+      "kind": "youtube",
+      "channel_id": "UChhw6DlKKTQ9mYSpTfXUYqA",
+      "weight": 9,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified",
+      "shorts": true
+    },
+    {
+      "id": "yt-my-first-million",
+      "name": "My First Million",
+      "kind": "youtube",
+      "channel_id": "UCyaN6mg5u8Cjy2ZI4ikWaug",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-all-in",
+      "name": "All-In Podcast",
+      "kind": "youtube",
+      "channel_id": "UCESLZhusAkFfsNsApnjF_Cg",
+      "weight": 11,
+      "filter": true,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-latent-space",
+      "name": "Latent Space (YouTube)",
+      "kind": "youtube",
+      "channel_id": "UCxBcwypKK-W3GHd_RZ9FZrQ",
+      "weight": 11,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "yt-every",
+      "name": "Every: AI & I",
+      "kind": "youtube",
+      "channel_id": "UCjIMtrzxYc0lblGhmOgC_CA",
+      "weight": 10,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion",
+      "tags": [
+        "ai"
+      ]
+    },
+    {
+      "id": "yt-guigu101",
+      "name": "硅谷101 (Silicon Valley 101)",
+      "kind": "youtube",
+      "channel_id": "UCKV2yWPB3wn0RTZh3cTD8YA",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "yt-think-school",
+      "name": "Think School (India)",
+      "kind": "youtube",
+      "channel_id": "UCKZozRVHRYsYHGEyNKuhhdA",
+      "weight": 9,
+      "filter": false,
+      "category": "analysis",
+      "claim": "opinion"
+    },
+    {
+      "id": "xiaohongshu",
+      "name": "小红书 (needs your login)",
+      "kind": "login",
+      "platform": "xiaohongshu",
+      "keywords": [
+        "AI工具",
+        "出海",
+        "副业 AI",
+        "独立开发"
+      ],
+      "limit": 10,
+      "search_args": [
+        "--sort",
+        "most-liked",
+        "--publish-time",
+        "day"
+      ],
+      "weight": 6,
+      "filter": false,
+      "category": "discussion",
+      "claim": "unverified"
+    },
+    {
+      "id": "x-search",
+      "name": "X search (needs your login)",
+      "kind": "login",
+      "platform": "twitter",
+      "keywords": [
+        "launched lang:en min_faves:500 -filter:replies",
+        "MRR lang:en min_faves:200 -filter:replies",
+        "\"just hit\" lang:en min_faves:200 -filter:replies"
+      ],
+      "limit": 15,
+      "search_args": [
+        "--product",
+        "top",
+        "--top-by-engagement",
+        "10"
+      ],
+      "weight": 6,
+      "filter": true,
       "category": "discussion",
       "claim": "unverified"
     }

@@ -1,0 +1,9 @@
+[
+ {"id": "1850000000000000001", "author": "examplefounder", "text": "We just hit $1M ARR, 14 months after launch.\nThanks to everyone who believed early.",
+  "created_at": "Wed Oct 21 16:00:00 +0000 2026", "likes": "4.1K", "views": "380000",
+  "url": "https://x.com/examplefounder/status/1850000000000000001"},
+ {"id": "1850000000000000002", "author": "@another_maker", "text": "Launched today: an open-source agent for invoices",
+  "created_at": "2026-10-21T19:30:00.000Z", "likes": 950, "views": null, "url": ""},
+ {"id": "1700000000000000003", "author": "old", "text": "Launched long ago", "created_at": "Mon Jan 02 10:00:00 +0000 2023",
+  "likes": "10", "url": "https://x.com/old/status/1700000000000000003"}
+]

@@ -20,8 +20,10 @@ pytest.importorskip("fastapi")
 psycopg = pytest.importorskip("psycopg")
 
 READ = "test-read-token"
+FOUNDERS = "test-founders-token"
 os.environ["SV_DATABASE_URL"] = TEST_DB
 os.environ["SV_READ_TOKEN_SHA256"] = hashlib.sha256(READ.encode()).hexdigest()
+os.environ["SV_FOUNDERS_TOKEN_SHA256"] = hashlib.sha256(FOUNDERS.encode()).hexdigest()
 
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -38,12 +40,14 @@ NOW = datetime.now(timezone.utc)
 @pytest.fixture(scope="module")
 def client():
     with psycopg.connect(TEST_DB, autocommit=True) as conn:
-        conn.execute("drop table if exists feed_entries, mentions, runs, items, ingest_tokens, schema_migrations cascade")
+        conn.execute("drop table if exists mover_events, mover_votes, mover_items, mover_notes, movers, feed_entries, mentions, runs, items, ingest_tokens, "
+                     "schema_migrations cascade")
         manage.migrate(conn)
         token = manage.issue_token(conn, "tester")
     with TestClient(api.app) as c:
         c.ingest = {"Authorization": f"Bearer {token}"}
         c.read = {"Authorization": f"Bearer {READ}"}
+        c.founders = {"Authorization": f"Bearer {FOUNDERS}"}
         yield c
 
 
@@ -188,3 +192,284 @@ def test_finish_twice_conflicts(client):
     assert client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest).status_code == 200
     assert client.post(f"/v1/ingest/runs/{run}/finish", json={"status": "complete"}, headers=client.ingest).status_code == 409
     assert client.post(f"/v1/ingest/runs/{run}/items", json={"items": [item()]}, headers=client.ingest).status_code == 409
+
+
+# ---------------------------------------------------------------- movers
+
+ACME_URL = "https://techcrunch.com/2026/10/21/acme-raises-12m-series-a"
+NOTE_TEXT = ("TAKE-only-for-founders-7f3a", "LEARN-only-for-founders-9b1c", "LOCALIZE-only-for-founders-2d4e")
+DESK_TEXT = ("REASON-only-for-founders-5e6f", "VERDICT-only-for-founders-8a9b", "MARKET-only-for-founders-1c2d")
+# (Stories have a public "score" and runs a public "status"; a mover has neither, checked below.)
+NOTE_KEYS = {"take", "learn", "localize", "stage", "votes", "net_votes", "voter", "reason", "actor", "detail",
+             "added_by"}
+SCORE = {"lines": {"demand": 10, "problem": 7, "fit": 12, "wedge": 6, "market": 7, "future": 10, "moat": 5, "whitespace": 3},
+         "market": DESK_TEXT[2], "verdict": DESK_TEXT[1]}
+
+
+def mover(**kw):
+    base = {
+        "id": "example-robotics", "name": "Example Robotics", "kind": "company",
+        "url": "https://www.example.com/?utm_source=x", "one_liner": "Robot arms for small kitchens.",
+        "summary": "Example Robotics sells a countertop robot arm to independent restaurants.",
+        "traction": [{"label": "Restaurants live", "value": "120", "source_url": "https://example.com/blog/120",
+                      "as_of": "2026-10-01"}],
+        "markets_live": ["US", "UK"], "claim_status": "confirmed", "tags": ["robotics"],
+        "image_url": "https://cdn.example.com/logo.png", "image_kind": "logo",
+    }
+    base.update(kw)
+    return base
+
+
+def post_movers(client, movers):
+    r = client.post("/v1/ingest/movers", json={"movers": movers}, headers=client.ingest)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def keys_in(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {k for v in value.values() for k in keys_in(v)}
+    if isinstance(value, list):
+        return {k for v in value for k in keys_in(v)}
+    return set()
+
+
+def test_mover_traction_needs_a_source(client):
+    line = {"label": "Users", "value": "10k", "as_of": "2026-10-01"}
+    bad = [
+        mover(traction=[line]),                                                     # no source at all
+        mover(traction=[{**line, "source_url": ""}]),
+        mover(traction=[{**line, "source_url": "http://example.com/plain-http"}]),
+        mover(traction=[{**line, "source_url": "https://localhost/x"}]),
+        mover(traction=[{**line, "source_url": "https://example.com/a", "as_of": "2999-01-01"}]),
+        mover(traction=[{**line, "source_url": f"https://example.com/{i}"} for i in range(9)]),
+        mover(id="unlock"), mover(id="Example_Robotics"), mover(id="x"),
+        mover(kind="person"), mover(claim_status="opinion"), mover(one_liner="x" * 201),
+        mover(take="top-level notes are refused, not dropped"),
+        mover(notes={"takes": "typo"}),
+        mover(name="<b>Example</b>"),
+        mover(image_url="http://cdn.example.com/logo.png"),
+    ]
+    r = post_movers(client, bad)
+    assert (r["inserted"], r["updated"], r["rejected"]) == (0, 0, len(bad)), r
+    assert "source_url" in r["results"][0]["reason"]
+    assert client.post("/v1/ingest/movers", json={"movers": [mover()]}, headers=client.read).status_code == 403
+    assert client.post("/v1/ingest/movers", json={"movers": [mover()] * 51}, headers=client.ingest).status_code == 422
+
+
+def test_mover_ingest_links_and_reports_missing(client):
+    take, learn, localize = NOTE_TEXT
+    r = post_movers(client, [
+        mover(status="watching", notes={"take": take, "learn": learn, "localize": localize},
+              item_urls=[ACME_URL + "?utm_campaign=x", "https://www.ycombinator.com/launches/abc-widgets",
+                         "https://example.com/never-ingested", "javascript:alert(1)"]),
+        mover(id="example-notes-app", name="Example Notes App", kind="app", one_liner="A notes app for field teams.",
+              traction=[], markets_live=["India"], claim_status="unverified", image_url=None, image_kind=None,
+              status="watching"),
+    ])
+    assert (r["inserted"], r["rejected"]) == (2, 0), r
+    first = r["results"][0]
+    assert first["outcome"] == "inserted" and first["linked"] == 2 and first["notes"] is True
+    assert first["missing"] == ["https://example.com/never-ingested", "javascript:alert(1)"]
+
+    # A story merged into another is found through its recorded sighting.
+    linked = client.post("/v1/ingest/movers/example-robotics/link", headers=client.ingest, json={"item_urls": [
+        "https://siliconangle.com/2026/10/21/acme-raises-12m-series-robot-kitchens/",
+        "https://x.com/founder/status/1850000000000000001", "https://example.com/nope"]}).json()
+    # "linked" counts new links: the merged story already points here, the X post is new.
+    assert linked == {"id": "example-robotics", "linked": 1, "missing": ["https://example.com/nope"]}
+    assert client.post("/v1/ingest/movers/no-such-mover/link", json={"item_urls": [ACME_URL]},
+                       headers=client.ingest).status_code == 404
+
+    one = client.get("/v1/movers/example-robotics", headers=client.read).json()
+    assert one["news_count"] == 3 and len(one["items"]) == 3
+    assert one["url"] == "https://www.example.com/" and one["traction"][0]["source_url"] == "https://example.com/blog/120"
+    stamps = [i["published_at"] or i["discovered_at"] for i in one["items"]]
+    assert stamps == sorted(stamps, reverse=True)
+    acme = next(i for i in one["items"] if i["url"] == ACME_URL)
+    assert acme["feed_date"] and isinstance(acme["mentions"], list)
+
+    item = client.get(f"/v1/items/{acme['id']}", headers=client.read).json()
+    assert item["movers"] == [{"id": "example-robotics", "name": "Example Robotics", "kind": "company"}]
+
+    # Rerun: updates in place; a notes field left out is kept.
+    r2 = post_movers(client, [mover(one_liner="Robot arms for small restaurant kitchens.", notes={"take": take + " v2"})])
+    assert r2["results"][0]["outcome"] == "updated" and r2["results"][0]["linked"] == 0
+    notes = client.get("/v1/private/movers/example-robotics", headers=client.founders).json()["notes"]
+    assert notes["take"] == take + " v2" and notes["learn"] == learn
+
+    listed = client.get("/v1/movers", headers=client.read).json()
+    assert listed["total"] == 2 and listed["facets"]["kinds"] == {"company": 1, "app": 1}
+    robo = next(m for m in listed["movers"] if m["id"] == "example-robotics")
+    assert robo["news_count"] == 3 and robo["latest_news_at"]
+    trending = client.get("/v1/movers?sort=trending", headers=client.read).json()["movers"]
+    assert trending[0]["id"] == "example-robotics" and trending[0]["news_recent"] >= 1
+    assert client.get("/v1/movers?sort=fit", headers=client.read).status_code == 422   # our score is not public
+    apps = client.get("/v1/movers?kind=app", headers=client.read).json()
+    assert [m["id"] for m in apps["movers"]] == ["example-notes-app"] and apps["movers"][0]["news_count"] == 0
+    assert client.get("/v1/movers?kind=person", headers=client.read).status_code == 422
+    ids = client.get("/v1/ingest/movers", headers=client.ingest).json()["movers"]
+    assert {(m["id"], m["kind"]) for m in ids} == {("example-robotics", "company"), ("example-notes-app", "app")}
+
+
+def test_proposed_movers_and_the_desk(client):
+    # A run proposes: nobody outside the desk sees it, even with a story pointing at it.
+    r = post_movers(client, [mover(id="example-proposal", name="Example Proposal", item_urls=[ACME_URL],
+                                   notes={"take": NOTE_TEXT[0], "score": SCORE})])
+    assert r["results"][0]["outcome"] == "inserted" and r["results"][0]["linked"] == 1, r
+    acme = api.svlib.item_id(ACME_URL)
+    assert client.get("/v1/movers/example-proposal", headers=client.read).status_code == 404
+    assert "example-proposal" not in client.get("/v1/movers", headers=client.read).text
+    assert "example-proposal" not in client.get("/v1/sitemap", headers=client.read).text
+    assert "example-proposal" not in client.get("/v1/movers/updates", headers=client.read).text
+    assert [m["id"] for m in client.get(f"/v1/items/{acme}", headers=client.read).json()["movers"]] == ["example-robotics"]
+
+    desk = client.get("/v1/private/desk", headers=client.founders)
+    assert desk.status_code == 200 and desk.headers["cache-control"] == "no-store"
+    d = desk.json()
+    first = d["movers"][0]                                   # sorted by score: the only scored one comes first
+    assert first["id"] == "example-proposal" and first["status"] == "proposed" and first["stage"] == "new"
+    assert first["score"]["total"] == 60 and first["score"]["lines"]["demand"] == 10 and first["score"]["scored_by"] == "tester"
+    assert d["facets"]["status"]["proposed"] == 1 and d["facets"]["status"]["watching"] == 2
+    assert [m["id"] for m in client.get("/v1/private/desk?status=proposed", headers=client.founders).json()["movers"]] == ["example-proposal"]
+    watching = client.get("/v1/private/desk?status=watching", headers=client.founders).json()
+    assert watching["facets"]["kind"] == {"company": 1, "app": 1} and watching["facets"]["stage"] == {"new": 2}   # counts match the view
+    assert watching["facets"]["stage_active"] == {"new": 3}                                                     # tiles count the queue too
+    assert len(client.get("/v1/private/desk?status=active", headers=client.founders).json()["movers"]) == 3
+
+    # Score lines must be the rubric's, within its maximums, and add up.
+    bad = [{**SCORE, "lines": {**SCORE["lines"], "demand": 26}}, {**SCORE, "lines": {"demand": 1}},
+           {**SCORE, "total": 99}, {**SCORE, "market": ""}]
+    r = post_movers(client, [mover(id="example-proposal", name="Example Proposal", notes={"score": b}) for b in bad])
+    assert r["rejected"] == len(bad), r
+
+    # Votes (one per founder, 0 takes it back), stage, then publishing.
+    vote = lambda mid, body: client.post(f"/v1/private/movers/{mid}/vote", json=body, headers=client.founders)
+    assert vote("example-proposal", {"voter": "michael", "vote": 1, "reason": DESK_TEXT[0]}).status_code == 200
+    assert vote("example-proposal", {"voter": "pulkit", "vote": -1}).status_code == 200
+    assert vote("example-proposal", {"voter": "pulkit", "vote": 0}).status_code == 200
+    assert vote("example-robotics", {"voter": "michael", "vote": 1, "reason": DESK_TEXT[0]}).status_code == 200
+    assert vote("example-proposal", {"voter": "Michael!", "vote": 1}).status_code == 422
+    assert vote("example-proposal", {"voter": "michael", "vote": 2}).status_code == 422
+    assert vote("no-such-mover", {"voter": "michael", "vote": 1}).status_code == 404
+    stage = client.post("/v1/private/movers/example-proposal/stage", json={"voter": "michael", "stage": "researching"},
+                        headers=client.founders)
+    assert stage.json() == {"id": "example-proposal", "stage": "researching"}
+    one = client.get("/v1/private/movers/example-proposal", headers=client.founders).json()
+    assert one["votes"] == [{"voter": "michael", "vote": 1, "reason": DESK_TEXT[0], "at": one["votes"][0]["at"]}]
+    assert one["net_votes"] == 1 and one["stage"] == "researching" and one["notes"]["take"] == NOTE_TEXT[0]
+    assert [e["kind"] for e in one["events"]][:3] == ["stage", "vote", "vote"] and one["events"][-1]["kind"] == "proposed"
+    assert len(one["items"]) == 1
+
+    pub = client.post("/v1/private/movers/example-proposal/status", json={"voter": "michael", "status": "watching"},
+                      headers=client.founders)
+    assert pub.json() == {"id": "example-proposal", "status": "watching"}
+    assert client.get("/v1/movers/example-proposal", headers=client.read).status_code == 200
+    ups = client.get("/v1/movers/updates", headers=client.read).json()["updates"]
+    assert (ups[0]["mover_id"], ups[0]["kind"]) == ("example-proposal", "added")
+    assert {u["kind"] for u in ups} <= {"added", "news"} and not keys_in(ups) & NOTE_KEYS
+
+    log = client.get("/v1/private/updates", headers=client.founders).json()["updates"]
+    assert log[0]["kind"] == "added" and log[0]["actor"] == "michael" and log[0]["private"] is False
+    assert any(e["kind"] == "vote" and e["detail"]["reason"] == DESK_TEXT[0] for e in log)
+    fb = {m["id"]: m for m in client.get("/v1/ingest/movers/feedback", headers=client.ingest).json()["movers"]}
+    assert fb["example-proposal"]["score"] == 60 and fb["example-proposal"]["net_votes"] == 1
+    assert fb["example-proposal"]["votes"][0]["reason"] == DESK_TEXT[0]
+
+    # A scoring run updates only the take or score, without resending public facts.
+    notes = lambda mid, body, h=client.ingest: client.post(f"/v1/ingest/movers/{mid}/notes", json=body, headers=h)
+    r = notes("example-robotics", {"score": {**SCORE, "lines": {**SCORE["lines"], "demand": 20}}})
+    assert r.json() == {"id": "example-robotics", "updated": ["score"], "score": 70}, r.text
+    assert notes("example-robotics", {}).status_code == 422
+    assert notes("example-robotics", {"score": {**SCORE, "total": 1}}).status_code == 422
+    assert notes("no-such-mover", {"take": "x"}).status_code == 404
+    assert notes("example-robotics", {"take": "x"}, client.founders).status_code == 403
+    robo = client.get("/v1/private/movers/example-robotics", headers=client.founders).json()
+    assert robo["score"]["total"] == 70 and robo["notes"]["take"] == NOTE_TEXT[0] + " v2"    # take kept
+    assert robo["events"][0]["kind"] == "scored" and robo["events"][0]["detail"]["total"] == 70
+
+    # Taken off the list again; the rest of this module expects two public movers.
+    off = client.post("/v1/private/movers/example-proposal/status", json={"voter": "pulkit", "status": "archived"},
+                      headers=client.founders)
+    assert off.status_code == 200 and client.get("/v1/movers/example-proposal", headers=client.read).status_code == 404
+    assert "example-proposal" not in client.get("/v1/movers/updates", headers=client.read).text
+
+
+def test_desk_rejects_everything_but_its_own_token(client, monkeypatch):
+    urls = ["/v1/private/desk", "/v1/private/movers/example-robotics", "/v1/private/updates"]
+    for url in urls:
+        assert client.get(url).status_code == 401
+        for headers in (client.read, client.ingest, {"Authorization": "Bearer nope"}):
+            assert client.get(url, headers=headers).status_code == 403, url
+    assert client.post("/v1/private/movers/example-robotics/vote", json={"voter": "michael", "vote": 1},
+                       headers=client.read).status_code == 403
+    assert client.post("/v1/private/movers/example-robotics/status", json={"voter": "michael", "status": "archived"},
+                       headers=client.ingest).status_code == 403
+    # The founders token opens nothing else.
+    assert client.get("/v1/movers", headers=client.founders).status_code == 403
+    assert client.get("/v1/ingest/movers", headers=client.founders).status_code == 403
+    assert client.get("/v1/private/movers/Bad_Id", headers=client.founders).status_code == 422
+
+    monkeypatch.setattr(api, "FOUNDERS_TOKEN_SHA256", "")                     # not configured
+    assert client.get("/v1/private/desk", headers=client.founders).status_code == 403
+    monkeypatch.setattr(api, "FOUNDERS_TOKEN_SHA256", api.READ_TOKEN_SHA256)   # misconfigured as the read token
+    assert client.get("/v1/private/desk", headers=client.read).status_code == 403
+
+
+PUBLIC_GETS = {
+    "/v1/health": ["/v1/health"],
+    "/v1/feed": ["/v1/feed", "/v1/feed?category=funding"],
+    "/v1/dates": ["/v1/dates"],
+    "/v1/items/{item_id}": [f"/v1/items/{api.svlib.item_id(ACME_URL)}"],
+    "/v1/topics": ["/v1/topics"],
+    "/v1/topics/{tag}": ["/v1/topics/robotics"],
+    "/v1/search": ["/v1/search?q=robot"],
+    "/v1/sitemap": ["/v1/sitemap"],
+    "/v1/movers": ["/v1/movers", "/v1/movers?kind=company", "/v1/movers?kind=app", "/v1/movers?sort=newest"],
+    "/v1/movers/updates": ["/v1/movers/updates"],
+    "/v1/movers/{mover_id}": ["/v1/movers/example-robotics", "/v1/movers/example-notes-app"],
+}
+
+
+def test_no_public_route_returns_the_founders_take(client):
+    # Every GET route outside /v1/private and /v1/ingest must be listed above,
+    # so a new public route cannot skip this check.
+    public = {r.path for r in api.app.routes if "GET" in getattr(r, "methods", set())
+              and not r.path.startswith(("/v1/private/", "/v1/ingest/"))}
+    assert public == set(PUBLIC_GETS), public ^ set(PUBLIC_GETS)
+    for urls in PUBLIC_GETS.values():
+        for url in urls:
+            r = client.get(url, headers=client.read)
+            assert r.status_code == 200, (url, r.text)
+            assert not keys_in(r.json()) & NOTE_KEYS, url
+            assert not any(t in r.text for t in NOTE_TEXT + DESK_TEXT), url
+    movers = client.get("/v1/movers", headers=client.read).json()["movers"]
+    movers.append(client.get("/v1/movers/example-robotics", headers=client.read).json())
+    assert movers and not any(set(m) & {"score", "status", "stage"} for m in movers)
+    # ...and the ingest listing, which a run reads, carries no notes either.
+    r = client.get("/v1/ingest/movers", headers=client.ingest)
+    assert not keys_in(r.json()) & NOTE_KEYS and not any(t in r.text for t in NOTE_TEXT + DESK_TEXT)
+
+
+def test_archive_hides_mover_from_public_lists(client):
+    client.post("/v1/ingest/movers/example-notes-app/link", json={"item_urls": [ACME_URL]}, headers=client.ingest)
+    acme = api.svlib.item_id(ACME_URL)
+    assert len(client.get(f"/v1/items/{acme}", headers=client.read).json()["movers"]) == 2
+
+    r = client.post("/v1/ingest/movers/example-notes-app/archive", json={}, headers=client.ingest)
+    assert r.json() == {"id": "example-notes-app", "status": "archived"}
+    listed = client.get("/v1/movers", headers=client.read).json()
+    assert [m["id"] for m in listed["movers"]] == ["example-robotics"] and listed["facets"]["kinds"] == {"company": 1}
+    assert client.get("/v1/movers?kind=app", headers=client.read).json()["total"] == 0
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 404
+    assert [m["id"] for m in client.get("/v1/sitemap", headers=client.read).json()["movers"]] == ["example-robotics"]
+    assert [m["id"] for m in client.get(f"/v1/items/{acme}", headers=client.read).json()["movers"]] == ["example-robotics"]
+    assert client.post("/v1/ingest/movers/no-such-mover/archive", json={}, headers=client.ingest).status_code == 404
+
+    # A rerun of the founder's file keeps it archived unless it says otherwise.
+    app = mover(id="example-notes-app", name="Example Notes App", kind="app", one_liner="A notes app for field teams.",
+                traction=[], image_url=None, image_kind=None)
+    post_movers(client, [app])
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 404
+    post_movers(client, [{**app, "status": "watching"}])
+    assert client.get("/v1/movers/example-notes-app", headers=client.read).status_code == 200

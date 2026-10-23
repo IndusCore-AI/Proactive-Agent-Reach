@@ -20,9 +20,11 @@ const SOURCES: [string, string, string][] = [
   ['Product Hunt', 'The public launch feed', 'Product pages are linked, not embedded'],
   ['Startup and technology press', 'TechCrunch (startups, venture, AI), Crunchbase News, Techmeme, GeekWire, SiliconANGLE, The Verge, StrictlyVC and others, through their RSS feeds', 'Headline, date and the feed’s own short description'],
   ['Investors and operators', 'Sequoia, a16z, Lenny’s Newsletter, Not Boring, Tomasz Tunguz, Latent Space', 'Theses and analysis are labelled Analysis or Opinion. Some newsletters (Stratechery, SemiAnalysis, SaaStr) refuse automated readers, so we leave them out'],
-  ['Company and lab announcements', 'OpenAI, Google AI, Hugging Face and GitHub blogs', 'Labelled Confirmed when the company is announcing its own news'],
-  ['Reddit', 'r/startups, r/SaaS, r/Entrepreneur, r/ycombinator, r/venturecapital through public RSS', 'Best effort: Reddit rate-limits anonymous access, and a failed check is shown on the edition'],
-  ['X (Twitter)', 'Founder and investor posts that other sources link to', 'X offers no open read access, so posts are embedded with X’s own widget only when found through another source'],
+  ['Founder and operator essays', 'Sam Altman, Simon Willison, Elad Gil, Benedict Evans, Andrej Karpathy, Dwarkesh Patel, Andrew Chen, and from China and India Interconnected, ChinAI and Sajith Pai, through their feeds', 'Labelled Opinion. Sites without a feed, or that refuse automated readers, are left out'],
+  ['YouTube', 'New videos from Y Combinator, a16z, Lenny’s Podcast, Greg Isenberg, Starter Story, My First Million, All-In, Latent Space, Every, 硅谷101 and Think School, through each channel’s public feed', 'Played with YouTube’s own player, loaded only when you press play. View counts as shown at collection time'],
+  ['Company and lab announcements', 'OpenAI, Google AI, Hugging Face, GitHub and Stripe blogs', 'Labelled Confirmed when the company is announcing its own news'],
+  ['Reddit', 'The day’s top posts in eleven startup, SaaS, AI and Indian startup communities, such as r/startups, r/SaaS, r/SideProject, r/LocalLLaMA and r/StartUpIndia, through public RSS', 'Best effort: Reddit allows anonymous readers very few requests, so we ask slowly, and a failed check is shown on the edition. Claims in posts are labelled Unverified'],
+  ['X (Twitter) and 小红书', 'Posts other sources link to; on days a team member runs a search with their own login, a few posts found for a short keyword list', 'Neither offers open read access. Without a login the search is skipped and the edition says so. X posts are shown with X’s own widget'],
 ];
 
 export default function About() {
@@ -81,7 +83,8 @@ export default function About() {
           <h2>Ranking</h2>
           <p>
             A story&apos;s score combines how recent it is, how much discussion it drew where that is measurable (Hacker
-            News points and comments, launch votes), how reliable the source is, and whether it is a funding round,
+            News points and comments, launch votes, video views, a post&apos;s place in Reddit&apos;s top list), how reliable
+            the source is, and whether it is a funding round,
             acquisition or launch. Claude Code may move a story up or down and records why; the reason is shown on the
             story&apos;s page. The three highest scores lead the edition.
           </p>
@@ -110,8 +113,9 @@ export default function About() {
             The link, title, source, dates, tags and the source&apos;s own short description (at most 400 characters). We do
             not copy articles, images or videos. A story&apos;s picture is the publisher&apos;s own preview image, loaded
             from the publisher&apos;s site (or a company logo from its launch page); when there is none, the card shows a
-            plain cover. Videos and X posts appear only when the story&apos;s source embedded or cited them, through the
-            platforms&apos; own players, and are checked to be about the story before they are published.
+            plain cover. Videos and X posts appear through the platforms&apos; own players, either because the story is the
+            video or post itself or because the story&apos;s source embedded or cited it, and are checked to be about the
+            story before they are published. We never store transcripts.
           </p>
           <h2>Follow along</h2>
           <p>

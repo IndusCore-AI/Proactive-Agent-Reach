@@ -2,9 +2,13 @@
 database. Runs on the prod VM on 127.0.0.1 only; the public site reaches it
 through its own Cloudflare quick tunnel (see ../ops).
 
-Two kinds of caller, two kinds of token:
-  read    the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
-  ingest  a founder's Claude Code run (rows in ingest_tokens, one per person)
+Three kinds of caller, three kinds of token:
+  read      the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
+  founders  the Vercel server, only for a founders-unlocked page: the founders'
+            desk (their take, scores, votes, stages, proposed movers) and the
+            votes, stage changes and publishing they do there
+            (SV_FOUNDERS_TOKEN_SHA256, a different token)
+  ingest    a founder's Claude Code run (rows in ingest_tokens, one per person)
 Tokens are compared by sha256, so neither the env file nor the database holds
 a usable secret.
 """
@@ -21,23 +25,36 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query, Response
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skill" / "aggregate-silicon-valley" / "scripts"))
 import svlib  # noqa: E402  (the one copy of the URL / duplicate rules, shared with the skill)
 
 DATABASE_URL = os.environ.get("SV_DATABASE_URL", "postgresql:///induscore_sv")
 READ_TOKEN_SHA256 = os.environ.get("SV_READ_TOKEN_SHA256", "")
+FOUNDERS_TOKEN_SHA256 = os.environ.get("SV_FOUNDERS_TOKEN_SHA256", "")
 FIRST_EDITION = date(2026, 1, 1)
 STALE_RUN = timedelta(hours=3)
 
 Category = Literal["funding", "acquisition", "launch", "news", "discussion", "analysis"]
 ClaimStatus = Literal["confirmed", "reported", "unverified", "opinion"]
 Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
+Tag = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]
+MOVER_ID = r"^[a-z0-9][a-z0-9-]{1,59}$"
+# Site paths under /movers/ that a mover id must never shadow.
+RESERVED_MOVER_IDS = {"unlock", "lock", "updates"}
+MoverKind = Literal["company", "app", "skill"]
+MoverClaim = Literal["confirmed", "reported", "unverified"]
+MoverStatus = Literal["proposed", "watching", "archived"]
+MoverStage = Literal["new", "researching", "building", "passed"]
+Founder = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")]
+# The office-hours rubric (teamctx k:878): line -> maximum points; 100 in all.
+RUBRIC = {"demand": 25, "problem": 10, "fit": 15, "wedge": 10, "market": 10, "future": 15, "moat": 10, "whitespace": 5}
+TRENDING_WINDOW = "14 days"
 
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
 
@@ -68,6 +85,18 @@ def require_read(authorization: Annotated[str | None, Header()] = None) -> None:
         raise HTTPException(403, "invalid read token")
 
 
+def require_founders(authorization: Annotated[str | None, Header()] = None) -> None:
+    """The founders' desk. Its own token: the read token never opens it, and a
+    deployment where both tokens are the same is refused outright."""
+    token = _bearer(authorization)
+    if (
+        not FOUNDERS_TOKEN_SHA256
+        or hmac.compare_digest(FOUNDERS_TOKEN_SHA256, READ_TOKEN_SHA256)
+        or not hmac.compare_digest(_sha256(token), FOUNDERS_TOKEN_SHA256)
+    ):
+        raise HTTPException(403, "invalid founders token")
+
+
 def require_ingest(authorization: Annotated[str | None, Header()] = None) -> str:
     token_hash = _sha256(_bearer(authorization))
     with pool.connection() as conn:
@@ -80,6 +109,28 @@ def require_ingest(authorization: Annotated[str | None, Header()] = None) -> str
 
 
 # ---------------------------------------------------------------- payloads
+
+def _one_line(v: str | None) -> str | None:
+    """Collapse whitespace; refuse markup. Used for every public text field."""
+    if v is None:
+        return None
+    v = " ".join(v.split())
+    if "<" in v and ">" in v:
+        raise ValueError("markup is not allowed")
+    return v or None
+
+
+def _https_image(v: str | None) -> str | None:
+    """A link to the publisher's own image: plain https, public host. The
+    original string is kept (CDNs need their query)."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v.startswith("https://") or any(c.isspace() for c in v) or any(c in v for c in "<>\"'"):
+        raise ValueError("image_url must be a plain https URL")
+    svlib.canonical_url(v)  # same public-host rules as story URLs
+    return v
+
 
 class Funding(BaseModel):
     company: str = Field(min_length=1, max_length=120)
@@ -108,7 +159,7 @@ class ItemIn(BaseModel):
     source: Slug
     source_name: str = Field(min_length=1, max_length=60)
     category: Category
-    tags: list[Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]] = Field(default_factory=list, max_length=8)
+    tags: list[Tag] = Field(default_factory=list, max_length=8)
     excerpt: str | None = Field(default=None, max_length=400)
     summary: str | None = Field(default=None, max_length=400)
     author: str | None = Field(default=None, max_length=120)
@@ -130,23 +181,12 @@ class ItemIn(BaseModel):
     @field_validator("image_url")
     @classmethod
     def _image(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = v.strip()
-        if not v.startswith("https://") or any(c.isspace() for c in v) or any(c in v for c in "<>\"'"):
-            raise ValueError("image_url must be a plain https URL")
-        svlib.canonical_url(v)  # same public-host rules as story URLs; the original string is kept
-        return v
+        return _https_image(v)
 
     @field_validator("title", "excerpt", "summary", "author", "source_name")
     @classmethod
     def _clean(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        v = " ".join(v.split())
-        if "<" in v and ">" in v:
-            raise ValueError("markup is not allowed")
-        return v or None
+        return _one_line(v)
 
     @field_validator("published_at")
     @classmethod
@@ -196,6 +236,177 @@ class RunFinish(BaseModel):
     sources: list[SourceStatus] = Field(default_factory=list, max_length=80)
     errors: list[Annotated[str, Field(max_length=500)]] = Field(default_factory=list, max_length=100)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class Traction(BaseModel):
+    """One traction fact, as its source states it, with the date it was true."""
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)      # "Paying customers"
+    value: str = Field(min_length=1, max_length=120)      # "1,200"
+    source_url: str                                       # required: no source, no line
+    as_of: date
+
+    @field_validator("label", "value")
+    @classmethod
+    def _clean(cls, v: str) -> str:
+        out = _one_line(v)
+        if not out:
+            raise ValueError("must not be blank")
+        return out
+
+    @field_validator("source_url")
+    @classmethod
+    def _source(cls, v: str) -> str:
+        url = svlib.canonical_url(v)
+        if not url.startswith("https://"):
+            raise ValueError("source_url must be an https URL")
+        return url
+
+    @field_validator("as_of")
+    @classmethod
+    def _as_of(cls, v: date) -> date:
+        if v > svlib.today_pt() + timedelta(days=1):
+            raise ValueError("as_of is in the future")
+        return v
+
+
+class Score(BaseModel):
+    """The office-hours rubric for the localized idea (not the original
+    product), for one named market. The total is always the sum of the lines."""
+    model_config = ConfigDict(extra="forbid")
+    lines: dict[str, int]
+    market: str = Field(min_length=1, max_length=120)      # the named target market
+    verdict: str | None = Field(default=None, max_length=300)
+    total: int | None = Field(default=None, ge=0, le=100)  # optional; checked against the lines
+
+    @field_validator("lines")
+    @classmethod
+    def _lines(cls, v: dict[str, int]) -> dict[str, int]:
+        if set(v) != set(RUBRIC):
+            raise ValueError(f"lines must be exactly {', '.join(RUBRIC)}")
+        for k, n in v.items():
+            if not 0 <= n <= RUBRIC[k]:
+                raise ValueError(f"{k} must be between 0 and {RUBRIC[k]}")
+        return {k: v[k] for k in RUBRIC}
+
+    @field_validator("market", "verdict")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @model_validator(mode="after")
+    def _total(self) -> "Score":
+        computed = sum(self.lines.values())
+        if self.total is not None and self.total != computed:
+            raise ValueError(f"total {self.total} is not the sum of the lines ({computed})")
+        self.total = computed
+        return self
+
+
+class MoverNotes(BaseModel):
+    """The founders' private take. Fields left out are kept as they are;
+    a field sent as null is cleared."""
+    model_config = ConfigDict(extra="forbid")
+    take: str | None = Field(default=None, max_length=1500)       # how it helps us
+    learn: str | None = Field(default=None, max_length=1000)      # what to learn
+    localize: str | None = Field(default=None, max_length=1000)   # where to localize
+    score: Score | None = None
+
+    @field_validator("take", "learn", "localize")
+    @classmethod
+    def _text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        lines = [" ".join(line.split()) for line in v.replace("\r\n", "\n").split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() or None
+
+
+class MoverIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Annotated[str, Field(pattern=MOVER_ID)]
+    name: str = Field(min_length=1, max_length=120)
+    kind: MoverKind
+    url: str
+    one_liner: str = Field(min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=800)
+    traction: list[Traction] = Field(default_factory=list, max_length=8)
+    markets_live: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(default_factory=list, max_length=8)
+    claim_status: MoverClaim = "reported"
+    tags: list[Tag] = Field(default_factory=list, max_length=8)
+    image_url: str | None = Field(default=None, max_length=1000)
+    image_kind: Literal["cover", "logo"] | None = None
+    # omitted: a new mover is proposed (founders only until one of them
+    # publishes it), an existing one keeps its status
+    status: MoverStatus | None = None
+    notes: MoverNotes | None = None
+    item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=50)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if v in RESERVED_MOVER_IDS:
+            raise ValueError(f"id {v!r} is reserved")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        return svlib.canonical_url(v)
+
+    @field_validator("image_url")
+    @classmethod
+    def _image(cls, v: str | None) -> str | None:
+        return _https_image(v)
+
+    @field_validator("name", "one_liner", "summary")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @field_validator("name", "one_liner")
+    @classmethod
+    def _required(cls, v: str | None) -> str:
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("markets_live")
+    @classmethod
+    def _markets(cls, v: list[str]) -> list[str]:
+        out = [m for m in (_one_line(x) for x in v) if m]
+        return list(dict.fromkeys(out))
+
+
+class MoversIn(BaseModel):
+    movers: list[dict[str, Any]] = Field(max_length=50)   # validated one by one, like items
+
+
+class LinkIn(BaseModel):
+    item_urls: list[Annotated[str, Field(max_length=2048)]] = Field(min_length=1, max_length=50)
+
+
+class VoteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    vote: Literal[-1, 0, 1]                                  # 0 takes the vote back
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+
+class StageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    stage: MoverStage
+
+
+class StatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    voter: Founder
+    status: MoverStatus
 
 
 # ---------------------------------------------------------------- read side
@@ -330,8 +541,13 @@ def item(item_id: Annotated[str, PathParam(pattern=r"^[a-z2-7]{12}$")]) -> dict:
             "f.feed_date desc, i.score desc limit 6",
             (item_id, row["tags"] or ["-"], (row["funding"] or {}).get("company"), row["tags"] or []),
         ).fetchall()
+        movers = conn.execute(
+            "select m.id, m.name, m.kind from mover_items mi join movers m on m.id = mi.mover_id "
+            "where mi.item_id = %s and m.status = 'watching' order by m.name", (item_id,)
+        ).fetchall()
     out = _item_json(row, mentions)
     out["related"] = [_item_json(r) for r in related]
+    out["movers"] = [{"id": m["id"], "name": m["name"], "kind": m["kind"]} for m in movers]
     return out
 
 
@@ -389,7 +605,264 @@ def sitemap() -> dict:
             "select i.id, i.title, i.updated_at, f.feed_date from items i join feed_entries f on f.item_id = i.id "
             "order by f.feed_date desc, f.rank limit 45000"
         ).fetchall()
-    return {"items": [{"id": r["id"], "title": r["title"], "updated_at": _iso(r["updated_at"]), "date": _iso(r["feed_date"])} for r in items]}
+        movers = conn.execute(
+            "select m.id, greatest(m.updated_at, max(mi.added_at)) updated_at from movers m "
+            "left join mover_items mi on mi.mover_id = m.id where m.status = 'watching' group by m.id order by m.id"
+        ).fetchall()
+    return {
+        "items": [{"id": r["id"], "title": r["title"], "updated_at": _iso(r["updated_at"]), "date": _iso(r["feed_date"])} for r in items],
+        "movers": [{"id": r["id"], "updated_at": _iso(r["updated_at"])} for r in movers],
+    }
+
+
+# Public mover facts. The column list is explicit on purpose: the founders'
+# take is in mover_notes and never joined here; who added a mover stays out too.
+MOVER_COLUMNS = """
+    m.id, m.name, m.kind, m.url, m.one_liner, m.summary, m.traction, m.markets_live, m.claim_status,
+    m.tags, m.image_url, m.image_kind, m.first_added_at, m.updated_at
+"""
+# news_count: every story pointing here; news_recent: those published in the
+# trending window, which is what "Trending" sorts by.
+MOVER_NEWS = f"""
+    left join lateral (
+        select count(*) news_count, max(coalesce(i.published_at, i.discovered_at)) latest_news_at,
+               count(*) filter (where coalesce(i.published_at, i.discovered_at) > now() - interval '{TRENDING_WINDOW}') news_recent
+        from mover_items mi join items i on i.id = mi.item_id where mi.mover_id = m.id
+    ) n on true
+"""
+MOVER_ORDER = {
+    "trending": "n.news_recent desc, n.latest_news_at desc nulls last, m.updated_at desc, m.name",
+    "newest": "m.first_added_at desc, m.name",
+}
+
+
+def _mover_json(row: dict) -> dict:
+    return {k: _iso(v) for k, v in row.items()}
+
+
+@app.get("/v1/movers", dependencies=[Depends(require_read)])
+def movers(
+    kind: MoverKind | None = None,
+    sort: Literal["trending", "newest"] = "trending",
+    limit: Annotated[int, Query(ge=1, le=100)] = 60,
+    offset: Annotated[int, Query(ge=0, le=5000)] = 0,
+) -> dict:
+    """Movers being watched, with how many stories feed each. Trending: most
+    stories in the last 14 days first; newest: most recently added first."""
+    where, args = ["m.status = 'watching'"], []
+    if kind:
+        where.append("m.kind = %s"); args.append(kind)
+    cond = " and ".join(where)
+    with pool.connection() as conn:
+        total = conn.execute(f"select count(*) n from movers m where {cond}", args).fetchone()["n"]
+        rows = conn.execute(
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at, n.news_recent from movers m {MOVER_NEWS} "
+            f"where {cond} order by {MOVER_ORDER[sort]} limit %s offset %s", [*args, limit, offset]
+        ).fetchall()
+        kinds = conn.execute(
+            "select coalesce(jsonb_object_agg(kind, n), '{}') k from (select kind, count(*) n from movers "
+            "where status = 'watching' group by kind) t"
+        ).fetchone()["k"]
+    return {"total": total, "movers": [_mover_json(r) for r in rows], "facets": {"kinds": kinds}}
+
+
+def _mover_items(conn, mover_id: str) -> list[dict]:
+    items = conn.execute(
+        f"select {ITEM_COLUMNS}, f.feed_date from mover_items mi join items i on i.id = mi.item_id "
+        "left join feed_entries f on f.item_id = i.id where mi.mover_id = %s "
+        "order by coalesce(i.published_at, i.discovered_at) desc limit 20", (mover_id,)
+    ).fetchall()
+    mentions = _mentions_for(conn, [r["id"] for r in items])
+    return [_item_json(r, mentions[r["id"]]) for r in items]
+
+
+@app.get("/v1/movers/updates", dependencies=[Depends(require_read)])
+def mover_updates(limit: Annotated[int, Query(ge=1, le=200)] = 60) -> dict:
+    """What changed on the list, newest first: movers added and new stories
+    pointing at one. Public lines only, never who did it, and only for movers
+    that are on the list now."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select e.id, e.at, e.kind, e.mover_id, m.name, m.kind mover_kind, "
+            "case when e.kind = 'news' then (e.detail->>'count')::int end count "
+            "from mover_events e join movers m on m.id = e.mover_id "
+            "where not e.private and e.kind in ('added', 'news') and m.status = 'watching' "
+            "order by e.at desc, e.id desc limit %s", (limit,)
+        ).fetchall()
+    return {"updates": [_mover_json(r) for r in rows]}
+
+
+@app.get("/v1/movers/{mover_id}", dependencies=[Depends(require_read)])
+def mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)]) -> dict:
+    with pool.connection() as conn:
+        row = conn.execute(
+            f"select {MOVER_COLUMNS}, n.news_count, n.latest_news_at, n.news_recent from movers m {MOVER_NEWS} "
+            "where m.id = %s and m.status = 'watching'", (mover_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "no such mover")
+        items = _mover_items(conn, mover_id)
+    return _mover_json(row) | {"items": items}
+
+
+# ---------------------------------------------------------------- founders' desk
+#
+# Everything below answers only to the founders token, which only a
+# founders-unlocked page on the Vercel server sends. Responses are never cached.
+
+DESK_COLUMNS = f"""
+    {MOVER_COLUMNS}, m.status, m.added_by, n.news_count, n.latest_news_at, n.news_recent,
+    mn.take, mn.learn, mn.localize, mn.score, coalesce(mn.stage, 'new') stage, mn.updated_at notes_updated_at,
+    coalesce(v.votes, '[]') votes, coalesce(v.net, 0) net_votes
+"""
+DESK_JOINS = f"""
+    {MOVER_NEWS}
+    left join mover_notes mn on mn.mover_id = m.id
+    left join lateral (
+        select jsonb_agg(jsonb_build_object('voter', mv.voter, 'vote', mv.vote, 'reason', mv.reason, 'at', mv.updated_at)
+                         order by mv.updated_at desc) votes, sum(mv.vote) net
+        from mover_votes mv where mv.mover_id = m.id
+    ) v on true
+"""
+DESK_ORDER = {
+    "fit": "(mn.score->>'total')::int desc nulls last, coalesce(v.net, 0) desc, m.name",
+    "votes": "coalesce(v.net, 0) desc, (mn.score->>'total')::int desc nulls last, m.name",
+    **MOVER_ORDER,
+}
+
+
+def _desk_json(row: dict) -> dict:
+    out = _mover_json(row)
+    out["notes"] = {k: out.pop(k) for k in ("take", "learn", "localize")}
+    out["notes"]["updated_at"] = out.pop("notes_updated_at")
+    return out
+
+
+@app.get("/v1/private/desk", dependencies=[Depends(require_founders)])
+def desk(
+    response: Response,
+    status: MoverStatus | Literal["active"] | None = None,
+    kind: MoverKind | None = None,
+    stage: MoverStage | None = None,
+    sort: Literal["fit", "votes", "trending", "newest"] = "fit",
+) -> dict:
+    """Every mover with the founders' take, score, stage and votes. Proposed
+    movers are here and nowhere public. status "active" means proposed or
+    watching. Facets: status over everything; kind and stage within the
+    status asked for (so a filter's count matches what it shows); and
+    stage_active, stages over everything not archived."""
+    response.headers["Cache-Control"] = "no-store"
+    scope, scope_args = ("m.status <> 'archived'", []) if status == "active" else (("m.status = %s", [status]) if status else ("true", []))
+    where, args = [scope], list(scope_args)
+    for col, val in (("m.kind", kind), ("coalesce(mn.stage, 'new')", stage)):
+        if val:
+            where.append(f"{col} = %s"); args.append(val)
+    stage_counts = ("select coalesce(jsonb_object_agg(stage, n), '{{}}') from (select coalesce(mn.stage, 'new') stage, count(*) n "
+                    "from movers m left join mover_notes mn on mn.mover_id = m.id where {} group by 1) t")
+    with pool.connection() as conn:
+        rows = conn.execute(
+            f"select {DESK_COLUMNS} from movers m {DESK_JOINS} where {' and '.join(where)} "
+            f"order by {DESK_ORDER[sort]} limit 300", args
+        ).fetchall()
+        facets = conn.execute(
+            "select jsonb_build_object("
+            "'status', (select coalesce(jsonb_object_agg(status, n), '{}') from (select status, count(*) n from movers group by status) t), "
+            f"'kind', (select coalesce(jsonb_object_agg(kind, n), '{{}}') from (select kind, count(*) n from movers m where {scope} group by kind) t), "
+            f"'stage', ({stage_counts.format(scope)}), "
+            f"'stage_active', ({stage_counts.format("m.status <> 'archived'")})) f",
+            scope_args * 2,
+        ).fetchone()["f"]
+    return {"movers": [_desk_json(r) for r in rows], "facets": facets}
+
+
+@app.get("/v1/private/movers/{mover_id}", dependencies=[Depends(require_founders)])
+def desk_mover(response: Response, mover_id: Annotated[str, PathParam(pattern=MOVER_ID)]) -> dict:
+    """One mover in any status, with everything the desk knows and its history."""
+    response.headers["Cache-Control"] = "no-store"
+    with pool.connection() as conn:
+        row = conn.execute(f"select {DESK_COLUMNS} from movers m {DESK_JOINS} where m.id = %s", (mover_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such mover")
+        items = _mover_items(conn, mover_id)
+        events = conn.execute(
+            "select id, at, kind, actor, detail from mover_events where mover_id = %s order by at desc, id desc limit 50",
+            (mover_id,),
+        ).fetchall()
+    return _desk_json(row) | {"items": items, "events": [_mover_json(e) for e in events]}
+
+
+@app.get("/v1/private/updates", dependencies=[Depends(require_founders)])
+def desk_updates(response: Response, limit: Annotated[int, Query(ge=1, le=300)] = 100) -> dict:
+    """The full log: proposals, votes, stages, scores and publishing, with who did it."""
+    response.headers["Cache-Control"] = "no-store"
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select e.id, e.at, e.kind, e.actor, e.detail, e.private, e.mover_id, m.name, m.kind mover_kind, m.status "
+            "from mover_events e join movers m on m.id = e.mover_id order by e.at desc, e.id desc limit %s", (limit,)
+        ).fetchall()
+    return {"updates": [_mover_json(r) for r in rows]}
+
+
+def _event(conn, mover_id: str, kind: str, actor: str, detail: dict | None = None) -> None:
+    """Record what changed. Only 'added' and 'news' are public lines."""
+    conn.execute(
+        "insert into mover_events (mover_id, kind, actor, detail, private) values (%s, %s, %s, %s, %s)",
+        (mover_id, kind, actor, Jsonb(detail or {}), kind not in ("added", "news")),
+    )
+
+
+STATUS_EVENT = {"proposed": "proposed", "watching": "added", "archived": "archived"}
+
+
+def _desk_lock(conn, mover_id: str) -> dict:
+    row = conn.execute("select status from movers where id = %s for update", (mover_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such mover")
+    return row
+
+
+@app.post("/v1/private/movers/{mover_id}/vote", dependencies=[Depends(require_founders)])
+def desk_vote(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: VoteIn) -> dict:
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        if body.vote == 0:
+            conn.execute("delete from mover_votes where mover_id = %s and voter = %s", (mover_id, body.voter))
+        else:
+            conn.execute(
+                "insert into mover_votes (mover_id, voter, vote, reason) values (%s, %s, %s, %s) "
+                "on conflict (mover_id, voter) do update set vote = excluded.vote, reason = excluded.reason, updated_at = now()",
+                (mover_id, body.voter, body.vote, body.reason),
+            )
+        _event(conn, mover_id, "vote", body.voter, {"vote": body.vote, "reason": body.reason})
+    return {"id": mover_id, "voter": body.voter, "vote": body.vote}
+
+
+@app.post("/v1/private/movers/{mover_id}/stage", dependencies=[Depends(require_founders)])
+def desk_stage(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: StageIn) -> dict:
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        old = conn.execute("select stage from mover_notes where mover_id = %s", (mover_id,)).fetchone()
+        if (old["stage"] if old else "new") != body.stage:
+            conn.execute(
+                "insert into mover_notes (mover_id, stage, updated_by) values (%s, %s, %s) on conflict (mover_id) "
+                "do update set stage = excluded.stage, updated_by = excluded.updated_by, updated_at = now()",
+                (mover_id, body.stage, body.voter),
+            )
+            _event(conn, mover_id, "stage", body.voter, {"from": old["stage"] if old else "new", "to": body.stage})
+    return {"id": mover_id, "stage": body.stage}
+
+
+@app.post("/v1/private/movers/{mover_id}/status", dependencies=[Depends(require_founders)])
+def desk_status(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: StatusIn) -> dict:
+    """Publish a proposed mover (watching), take one off the list (archived),
+    or send it back to the founders' queue (proposed)."""
+    with pool.connection() as conn, conn.transaction():
+        row = _desk_lock(conn, mover_id)
+        if row["status"] != body.status:
+            conn.execute("update movers set status = %s, updated_by = %s, updated_at = now() where id = %s",
+                         (body.status, body.voter, mover_id))
+            _event(conn, mover_id, STATUS_EVENT[body.status], body.voter, {"from": row["status"]})
+    return {"id": mover_id, "status": body.status}
 
 
 # ---------------------------------------------------------------- ingest side
@@ -603,3 +1076,187 @@ def edition_ids(feed_date: date, operator: Annotated[str, Depends(require_ingest
         "items": [dict(r) for r in rows],
         "runs": [{k: (str(v) if k == "id" else _iso(v)) for k, v in r.items()} for r in runs],
     }
+
+
+# ---------------------------------------------------------------- movers (ingest)
+#
+# A run may propose movers: a new one is "proposed" and only the founders see
+# it, on their desk, until one of them publishes it there (or a founder's run
+# sends status "watching" on purpose). Each write records the operator and a
+# line in mover_events. Notes and scores go to mover_notes and nowhere else.
+
+def _resolve_items(conn, urls: list[str]) -> tuple[list[str], list[str]]:
+    """Item ids for story URLs that exist (as an item, or as a recorded
+    sighting of one); the URLs that match nothing are returned as missing."""
+    found: list[str] = []
+    missing: list[str] = []
+    for raw in urls:
+        try:
+            url = svlib.canonical_url(raw)
+        except ValueError:
+            missing.append(raw[:300])
+            continue
+        row = conn.execute(
+            "(select id, 0 p from items where id = %s or url = %s) "
+            "union all (select item_id, 1 from mentions where url = %s) order by p limit 1",
+            (svlib.item_id(url), url, url),
+        ).fetchone()
+        if row:
+            found.append(row["id"])
+        else:
+            missing.append(url)
+    return list(dict.fromkeys(found)), missing
+
+
+def _link(conn, mover_id: str, item_ids: list[str], operator: str) -> int:
+    """Point these stories at a mover; returns how many were new links."""
+    new = 0
+    for iid in item_ids:
+        new += conn.execute(
+            "insert into mover_items (mover_id, item_id) values (%s, %s) on conflict do nothing", (mover_id, iid)
+        ).rowcount
+    if new:
+        _event(conn, mover_id, "news", operator, {"count": new})
+    return new
+
+
+def _upsert_mover(conn, m: MoverIn, operator: str) -> bool:
+    """Insert or replace a mover's public facts; True when it is new."""
+    before = conn.execute("select status from movers where id = %s for update", (m.id,)).fetchone()
+    row = conn.execute(
+        """insert into movers (id, name, kind, url, one_liner, summary, traction, markets_live, claim_status, tags,
+               image_url, image_kind, status, added_by, updated_by)
+           values (%(id)s, %(name)s, %(kind)s, %(url)s, %(one_liner)s, %(summary)s, %(traction)s, %(markets)s,
+               %(claim)s, %(tags)s, %(image_url)s, %(image_kind)s, coalesce(%(status)s, 'proposed'), %(op)s, %(op)s)
+           on conflict (id) do update set
+               name = excluded.name, kind = excluded.kind, url = excluded.url, one_liner = excluded.one_liner,
+               summary = excluded.summary, traction = excluded.traction, markets_live = excluded.markets_live,
+               claim_status = excluded.claim_status, tags = excluded.tags, image_url = excluded.image_url,
+               image_kind = excluded.image_kind, status = coalesce(%(status)s, movers.status),
+               updated_by = excluded.updated_by, updated_at = now()
+           returning (xmax = 0) as inserted, status""",
+        {
+            "id": m.id, "name": m.name, "kind": m.kind, "url": m.url, "one_liner": m.one_liner, "summary": m.summary,
+            "traction": Jsonb([t.model_dump(mode="json") for t in m.traction]), "markets": m.markets_live,
+            "claim": m.claim_status, "tags": list(dict.fromkeys(m.tags)), "image_url": m.image_url,
+            "image_kind": m.image_kind if m.image_url else None, "status": m.status, "op": operator,
+        },
+    ).fetchone()
+    if before is None or before["status"] != row["status"]:
+        _event(conn, m.id, STATUS_EVENT[row["status"]], operator)
+    if m.notes is not None:
+        _write_notes(conn, m.id, m.notes, operator)   # a subset of take / learn / localize / score (extra fields are refused)
+    return bool(row["inserted"])
+
+
+def _mover_exists(conn, mover_id: str) -> None:
+    if not conn.execute("select 1 from movers where id = %s", (mover_id,)).fetchone():
+        raise HTTPException(404, "no such mover")
+
+
+@app.post("/v1/ingest/movers")
+def ingest_movers(body: MoversIn, operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    results, counts = [], {"inserted": 0, "updated": 0, "rejected": 0}
+    with pool.connection() as conn:
+        for index, raw in enumerate(body.movers):
+            try:
+                m = MoverIn.model_validate(raw)
+            except Exception as exc:  # pydantic ValidationError or a URL ValueError
+                counts["rejected"] += 1
+                results.append({"index": index, "id": raw.get("id") if isinstance(raw.get("id"), str) else None,
+                                "outcome": "rejected", "reason": str(exc)[:500]})
+                continue
+            try:
+                with conn.transaction():
+                    inserted = _upsert_mover(conn, m, operator)
+                    ids, missing = _resolve_items(conn, m.item_urls)
+                    linked = _link(conn, m.id, ids, operator)
+            except Exception as exc:
+                counts["rejected"] += 1
+                results.append({"index": index, "id": m.id, "outcome": "rejected", "reason": f"database: {exc}"[:300]})
+                continue
+            outcome = "inserted" if inserted else "updated"
+            counts[outcome] += 1
+            results.append({"index": index, "id": m.id, "outcome": outcome, "linked": linked, "missing": missing,
+                            "notes": bool(m.notes and m.notes.model_fields_set)})
+    return {"operator": operator, **counts, "results": results}
+
+
+@app.get("/v1/ingest/movers")
+def ingest_mover_list(operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """Every mover (proposed, watching or archived), so a run can match stories to them."""
+    with pool.connection() as conn:
+        rows = conn.execute("select id, name, kind, url, status from movers order by name").fetchall()
+    return {"movers": [dict(r) for r in rows]}
+
+
+@app.post("/v1/ingest/movers/{mover_id}/link")
+def link_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: LinkIn,
+               operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    with pool.connection() as conn:
+        _mover_exists(conn, mover_id)
+        ids, missing = _resolve_items(conn, body.item_urls)
+        linked = _link(conn, mover_id, ids, operator)
+    return {"id": mover_id, "linked": linked, "missing": missing}
+
+
+@app.post("/v1/ingest/movers/{mover_id}/archive")
+def archive_mover(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)],
+                  operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    with pool.connection() as conn, conn.transaction():
+        row = _desk_lock(conn, mover_id)
+        if row["status"] != "archived":
+            conn.execute("update movers set status = 'archived', updated_by = %s, updated_at = now() where id = %s",
+                         (operator, mover_id))
+            _event(conn, mover_id, "archived", operator, {"from": row["status"]})
+    return {"id": mover_id, "status": "archived"}
+
+
+def _write_notes(conn, mover_id: str, notes: MoverNotes, operator: str) -> None:
+    """Write the notes fields that were sent (null clears one) and log a new score."""
+    fields = sorted(notes.model_fields_set)
+    if not fields:
+        return
+    values = []
+    for f in fields:
+        v = getattr(notes, f)
+        if f == "score" and v is not None:
+            v = Jsonb(v.model_dump() | {"scored_at": svlib.today_pt().isoformat(), "scored_by": operator})
+        values.append(v)
+    conn.execute(
+        f"insert into mover_notes (mover_id, {', '.join(fields)}, updated_by) values (%s, {', '.join(['%s'] * len(fields))}, %s) "
+        f"on conflict (mover_id) do update set {', '.join(f'{f} = excluded.{f}' for f in fields)}, "
+        "updated_by = excluded.updated_by, updated_at = now()",
+        (mover_id, *values, operator),
+    )
+    if notes.score is not None:
+        _event(conn, mover_id, "scored", operator, {"total": notes.score.total, "market": notes.score.market})
+
+
+@app.post("/v1/ingest/movers/{mover_id}/notes")
+def mover_notes(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: MoverNotes,
+                operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """Update only the founders' take or score (e.g. after an office-hours run),
+    without resending the public facts."""
+    if not body.model_fields_set:
+        raise HTTPException(422, "send at least one of take, learn, localize, score")
+    with pool.connection() as conn, conn.transaction():
+        _desk_lock(conn, mover_id)
+        _write_notes(conn, mover_id, body, operator)
+    return {"id": mover_id, "updated": sorted(body.model_fields_set),
+            "score": body.score.total if body.score is not None else None}
+
+
+@app.get("/v1/ingest/movers/feedback")
+def mover_feedback(operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """What the founders thought of each mover: votes with reasons, stage,
+    status and score. A run reads this before proposing more, so it learns
+    what they want (more like the upvoted, none like the passed)."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            f"select m.id, m.name, m.kind, m.tags, m.markets_live, m.status, coalesce(mn.stage, 'new') stage, "
+            f"(mn.score->>'total')::int score, mn.score->>'market' score_market, "
+            f"coalesce(v.votes, '[]') votes, coalesce(v.net, 0) net_votes from movers m {DESK_JOINS} "
+            "order by m.updated_at desc"
+        ).fetchall()
+    return {"movers": [_mover_json(r) for r in rows]}
