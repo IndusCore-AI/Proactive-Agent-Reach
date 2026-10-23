@@ -40,7 +40,7 @@ NOW = datetime.now(timezone.utc)
 @pytest.fixture(scope="module")
 def client():
     with psycopg.connect(TEST_DB, autocommit=True) as conn:
-        conn.execute("drop table if exists mover_events, mover_votes, mover_items, mover_notes, movers, feed_entries, mentions, runs, items, ingest_tokens, "
+        conn.execute("drop table if exists research_ideas, research_runs, mover_events, mover_votes, mover_items, mover_notes, movers, feed_entries, mentions, runs, items, ingest_tokens, "
                      "schema_migrations cascade")
         manage.migrate(conn)
         token = manage.issue_token(conn, "tester")
@@ -396,7 +396,7 @@ def test_proposed_movers_and_the_desk(client):
 
 
 def test_desk_rejects_everything_but_its_own_token(client, monkeypatch):
-    urls = ["/v1/private/desk", "/v1/private/movers/example-robotics", "/v1/private/updates"]
+    urls = ["/v1/private/desk", "/v1/private/movers/example-robotics", "/v1/private/updates", "/v1/private/research"]
     for url in urls:
         assert client.get(url).status_code == 401
         for headers in (client.read, client.ingest, {"Authorization": "Bearer nope"}):
@@ -414,6 +414,75 @@ def test_desk_rejects_everything_but_its_own_token(client, monkeypatch):
     assert client.get("/v1/private/desk", headers=client.founders).status_code == 403
     monkeypatch.setattr(api, "FOUNDERS_TOKEN_SHA256", api.READ_TOKEN_SHA256)   # misconfigured as the read token
     assert client.get("/v1/private/desk", headers=client.read).status_code == 403
+
+
+RESEARCH_TEXT = ("FINDING-only-for-founders-3a4b", "IDEA-only-for-founders-6c7d", "SUMMARY-only-for-founders-0e1f")
+LINES_48 = {"demand": 0, "problem": 5, "fit": 13, "wedge": 5, "market": 6, "future": 10, "moat": 6, "whitespace": 3}
+
+
+def research_run(**kw):
+    base = {
+        "id": "2026-10-22-example-lead", "title": "Example lead", "run_date": "2026-10-22", "outcome": "makes_list",
+        "verdict": "Best 48", "summary": RESEARCH_TEXT[2], "method": "Read the app charts.", "position": 1,
+        "findings": [{"title": "The lead", "text": RESEARCH_TEXT[0]}, {"group": "How they grew", "text": "Reddit first, then search."}],
+        "sources": [{"label": "Example source", "url": "https://example.com/source?utm_source=x"}],
+        "refs": ["03-example.md", "k:1", "k:1"],
+        "ideas": [
+            {"idea": RESEARCH_TEXT[1], "market": "India", "total": 48, "lines": LINES_48, "mover_id": "example-robotics"},
+            {"idea": "A weaker idea", "market": "Bangladesh", "total": 31, "note": "Platforms ship it free.", "mover_id": "not-a-mover"},
+        ],
+    }
+    base.update(kw)
+    return base
+
+
+def test_research_runs_are_private_and_replaced_whole(client):
+    def post(runs):
+        r = client.post("/v1/ingest/research", json={"runs": runs}, headers=client.ingest)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    good = research_run()
+    bad = [
+        research_run(id="2026-10-22-sum", ideas=[{**good["ideas"][0], "total": 50}]),          # lines don't add up
+        research_run(id="2026-10-22-cut", ideas=[good["ideas"][1]]),                          # makes_list with nothing at 40
+        research_run(id="2026-10-22-tag", findings=[{"text": "<b>markup</b> here"}]),         # markup
+        research_run(id="2026-10-22-key", ideas=[{**good["ideas"][0], "lines": {"demand": 0}}]),
+        research_run(id="2026-10-22-src", sources=[{"label": "Plain http", "url": "http://example.com/x"}]),
+    ]
+    res = post([good, *bad])
+    assert (res["inserted"], res["updated"], res["rejected"]) == (1, 0, 5), res
+    assert res["results"][0] == {"index": 0, "id": good["id"], "outcome": "inserted", "ideas": 2, "unlinked": ["not-a-mover"]}
+    reasons = [r["reason"] for r in res["results"][1:]]
+    assert "not the sum of the lines" in reasons[0] and "makes_list needs an idea at 40" in reasons[1]
+    assert "markup" in reasons[2] and "lines must be exactly" in reasons[3] and "https" in reasons[4]
+
+    got = client.get("/v1/private/research", headers=client.founders)
+    assert got.status_code == 200 and got.headers["cache-control"] == "no-store"
+    body = got.json()
+    assert body["cutoff"] == 40 and [r["id"] for r in body["runs"]] == [good["id"]]
+    one = body["runs"][0]
+    assert one["run_date"] == "2026-10-22" and one["refs"] == ["03-example.md", "k:1"]
+    assert one["sources"] == [{"label": "Example source", "url": "https://example.com/source"}]
+    assert one["findings"][1] == {"group": "How they grew", "title": None, "text": "Reddit first, then search."}
+    first, second = one["ideas"]
+    assert first["total"] == 48 and first["lines"] == LINES_48
+    assert first["mover"]["id"] == "example-robotics" and first["mover"]["name"] == "Example Robotics"
+    assert second["mover"] is None and second["lines"] is None and second["note"] == "Platforms ship it free."
+
+    # Sent again, a run replaces the stored one, ideas included.
+    res = post([{**good, "verdict": "Best 48, checked again", "ideas": good["ideas"][:1]}])
+    assert (res["inserted"], res["updated"]) == (0, 1) and res["results"][0]["unlinked"] == []
+    one = client.get("/v1/private/research", headers=client.founders).json()["runs"][0]
+    assert one["verdict"] == "Best 48, checked again" and len(one["ideas"]) == 1
+    listed = client.get("/v1/ingest/research", headers=client.ingest).json()["runs"]
+    assert [(r["id"], r["ideas"], r["best"]) for r in listed] == [(good["id"], 1, 48)]
+
+    # Only the founders token reads it, and only an ingest token writes it.
+    assert client.post("/v1/ingest/research", json={"runs": [good]}, headers=client.founders).status_code == 403
+    assert client.get("/v1/ingest/research", headers=client.read).status_code == 403
+    # "research" is a site path, so no mover may take it as an id.
+    assert post_movers(client, [mover(id="research")])["rejected"] == 1
 
 
 PUBLIC_GETS = {
@@ -442,7 +511,7 @@ def test_no_public_route_returns_the_founders_take(client):
             r = client.get(url, headers=client.read)
             assert r.status_code == 200, (url, r.text)
             assert not keys_in(r.json()) & NOTE_KEYS, url
-            assert not any(t in r.text for t in NOTE_TEXT + DESK_TEXT), url
+            assert not any(t in r.text for t in NOTE_TEXT + DESK_TEXT + RESEARCH_TEXT), url
     movers = client.get("/v1/movers", headers=client.read).json()["movers"]
     movers.append(client.get("/v1/movers/example-robotics", headers=client.read).json())
     assert movers and not any(set(m) & {"score", "status", "stage"} for m in movers)

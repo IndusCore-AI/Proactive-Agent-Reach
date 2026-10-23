@@ -5,8 +5,8 @@ through its own Cloudflare quick tunnel (see ../ops).
 Three kinds of caller, three kinds of token:
   read      the Vercel server (SV_READ_TOKEN_SHA256 in the env file)
   founders  the Vercel server, only for a founders-unlocked page: the founders'
-            desk (their take, scores, votes, stages, proposed movers) and the
-            votes, stage changes and publishing they do there
+            desk (their take, scores, votes, stages, proposed movers), their
+            research, and the votes, stage changes and publishing they do there
             (SV_FOUNDERS_TOKEN_SHA256, a different token)
   ingest    a founder's Claude Code run (rows in ingest_tokens, one per person)
 Tokens are compared by sha256, so neither the env file nor the database holds
@@ -46,7 +46,7 @@ Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
 Tag = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,29}$")]
 MOVER_ID = r"^[a-z0-9][a-z0-9-]{1,59}$"
 # Site paths under /movers/ that a mover id must never shadow.
-RESERVED_MOVER_IDS = {"unlock", "lock", "updates"}
+RESERVED_MOVER_IDS = {"unlock", "lock", "updates", "research"}
 MoverKind = Literal["company", "app", "skill"]
 MoverClaim = Literal["confirmed", "reported", "unverified"]
 MoverStatus = Literal["proposed", "watching", "archived"]
@@ -54,6 +54,9 @@ MoverStage = Literal["new", "researching", "building", "passed"]
 Founder = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")]
 # The office-hours rubric (teamctx k:878): line -> maximum points; 100 in all.
 RUBRIC = {"demand": 25, "problem": 10, "fit": 15, "wedge": 10, "market": 10, "future": 15, "moat": 10, "whitespace": 5}
+# The rubric's first band: an idea under it stays off the list.
+RESEARCH_CUTOFF = 40
+ResearchOutcome = Literal["makes_list", "below_cutoff", "no", "replaced", "input"]
 TRENDING_WINDOW = "14 days"
 
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
@@ -270,6 +273,15 @@ class Traction(BaseModel):
         return v
 
 
+def _rubric_lines(v: dict[str, int]) -> dict[str, int]:
+    if set(v) != set(RUBRIC):
+        raise ValueError(f"lines must be exactly {', '.join(RUBRIC)}")
+    for k, n in v.items():
+        if not 0 <= n <= RUBRIC[k]:
+            raise ValueError(f"{k} must be between 0 and {RUBRIC[k]}")
+    return {k: v[k] for k in RUBRIC}
+
+
 class Score(BaseModel):
     """The office-hours rubric for the localized idea (not the original
     product), for one named market. The total is always the sum of the lines."""
@@ -282,12 +294,7 @@ class Score(BaseModel):
     @field_validator("lines")
     @classmethod
     def _lines(cls, v: dict[str, int]) -> dict[str, int]:
-        if set(v) != set(RUBRIC):
-            raise ValueError(f"lines must be exactly {', '.join(RUBRIC)}")
-        for k, n in v.items():
-            if not 0 <= n <= RUBRIC[k]:
-                raise ValueError(f"{k} must be between 0 and {RUBRIC[k]}")
-        return {k: v[k] for k in RUBRIC}
+        return _rubric_lines(v)
 
     @field_validator("market", "verdict")
     @classmethod
@@ -407,6 +414,135 @@ class StatusIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     voter: Founder
     status: MoverStatus
+
+
+def _required_line(v: str | None) -> str:
+    out = _one_line(v)
+    if not out:
+        raise ValueError("must not be blank")
+    return out
+
+
+class Finding(BaseModel):
+    """One thing a research run found. Consecutive findings with the same
+    group share a heading ("How they grew")."""
+    model_config = ConfigDict(extra="forbid")
+    group: str | None = Field(default=None, max_length=60)
+    title: str | None = Field(default=None, max_length=160)   # the lead, in bold
+    text: str = Field(min_length=1, max_length=900)
+
+    @field_validator("group", "title")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        return _required_line(v)
+
+
+class SourceLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)
+    url: str
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, v: str) -> str:
+        return _required_line(v)
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        url = svlib.canonical_url(v)
+        if not url.startswith("https://"):
+            raise ValueError("url must be an https URL")
+        return url
+
+
+class IdeaIn(BaseModel):
+    """A localized idea, scored on the rubric for one named market. lines may
+    be left out when only the total was recorded; when sent, they must add up."""
+    model_config = ConfigDict(extra="forbid")
+    idea: str = Field(min_length=1, max_length=200)      # "Reference -> our localized version"
+    market: str = Field(min_length=1, max_length=120)
+    total: int = Field(ge=0, le=100)
+    lines: dict[str, int] | None = None
+    note: str | None = Field(default=None, max_length=300)
+    mover_id: Annotated[str, Field(pattern=MOVER_ID)] | None = None   # when it became a mover
+
+    @field_validator("idea", "market")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        return _required_line(v)
+
+    @field_validator("note")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @field_validator("lines")
+    @classmethod
+    def _lines(cls, v: dict[str, int] | None) -> dict[str, int] | None:
+        return None if v is None else _rubric_lines(v)
+
+    @model_validator(mode="after")
+    def _adds_up(self) -> "IdeaIn":
+        if self.lines is not None and sum(self.lines.values()) != self.total:
+            raise ValueError(f"total {self.total} is not the sum of the lines ({sum(self.lines.values())})")
+        return self
+
+
+class ResearchRunIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: Annotated[str, Field(pattern=MOVER_ID)]          # "2026-10-22-example-lead"
+    title: str = Field(min_length=1, max_length=160)
+    run_date: date
+    outcome: ResearchOutcome
+    verdict: str = Field(min_length=1, max_length=120)   # "Out, 30"
+    summary: str | None = Field(default=None, max_length=1500)
+    method: str | None = Field(default=None, max_length=1500)
+    findings: list[Finding] = Field(default_factory=list, max_length=20)
+    sources: list[SourceLink] = Field(default_factory=list, max_length=15)
+    refs: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=12)
+    position: int = Field(default=0, ge=0, le=999)       # order among runs of the same day
+    ideas: list[IdeaIn] = Field(default_factory=list, max_length=60)
+
+    @field_validator("title", "verdict")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        return _required_line(v)
+
+    @field_validator("summary", "method")
+    @classmethod
+    def _clean(cls, v: str | None) -> str | None:
+        return _one_line(v)
+
+    @field_validator("refs")
+    @classmethod
+    def _refs(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(_required_line(x) for x in v))
+
+    @field_validator("run_date")
+    @classmethod
+    def _run_date(cls, v: date) -> date:
+        if v > svlib.today_pt() + timedelta(days=1):
+            raise ValueError("run_date is in the future")
+        return v
+
+    @model_validator(mode="after")
+    def _outcome(self) -> "ResearchRunIn":
+        best = max((i.total for i in self.ideas), default=None)
+        if self.outcome == "makes_list" and (best is None or best < RESEARCH_CUTOFF):
+            raise ValueError(f"outcome makes_list needs an idea at {RESEARCH_CUTOFF} or more")
+        if self.outcome == "below_cutoff" and (best is None or best >= RESEARCH_CUTOFF):
+            raise ValueError(f"outcome below_cutoff needs scored ideas, all under {RESEARCH_CUTOFF}")
+        return self
+
+
+class ResearchIn(BaseModel):
+    runs: list[dict[str, Any]] = Field(max_length=20)    # validated one by one, like movers
 
 
 # ---------------------------------------------------------------- read side
@@ -865,6 +1001,30 @@ def desk_status(mover_id: Annotated[str, PathParam(pattern=MOVER_ID)], body: Sta
     return {"id": mover_id, "status": body.status}
 
 
+@app.get("/v1/private/research", dependencies=[Depends(require_founders)])
+def research(response: Response) -> dict:
+    """Every research run: verdict, how it was found, what it found, sources,
+    and each idea it scored, including those under the cutoff. An idea that
+    became a mover carries the mover's name and status."""
+    response.headers["Cache-Control"] = "no-store"
+    with pool.connection() as conn:
+        runs = conn.execute(
+            "select id, title, run_date, outcome, verdict, summary, method, findings, sources, refs, updated_by, updated_at "
+            "from research_runs order by run_date desc, position, id"
+        ).fetchall()
+        ideas = conn.execute(
+            "select ri.run_id, ri.position, ri.idea, ri.market, ri.total, ri.lines, ri.note, ri.mover_id, "
+            "m.name mover_name, m.status mover_status "
+            "from research_ideas ri left join movers m on m.id = ri.mover_id order by ri.run_id, ri.position"
+        ).fetchall()
+    by_run: dict[str, list[dict]] = {}
+    for i in ideas:
+        mover = {"id": i["mover_id"], "name": i["mover_name"], "status": i["mover_status"]} if i["mover_id"] else None
+        by_run.setdefault(i["run_id"], []).append(
+            {k: i[k] for k in ("position", "idea", "market", "total", "lines", "note")} | {"mover": mover})
+    return {"cutoff": RESEARCH_CUTOFF, "runs": [_mover_json(r) | {"ideas": by_run.get(r["id"], [])} for r in runs]}
+
+
 # ---------------------------------------------------------------- ingest side
 
 @app.post("/v1/ingest/runs")
@@ -1260,3 +1420,76 @@ def mover_feedback(operator: Annotated[str, Depends(require_ingest)]) -> dict:
             "order by m.updated_at desc"
         ).fetchall()
     return {"movers": [_mover_json(r) for r in rows]}
+
+
+def _upsert_research(conn, r: ResearchRunIn, operator: str) -> tuple[bool, list[str]]:
+    """Insert or replace a run and all of its ideas; returns (new, mover ids not found)."""
+    row = conn.execute(
+        """insert into research_runs (id, title, run_date, outcome, verdict, summary, method, findings, sources, refs,
+               position, added_by, updated_by)
+           values (%(id)s, %(title)s, %(run_date)s, %(outcome)s, %(verdict)s, %(summary)s, %(method)s, %(findings)s,
+               %(sources)s, %(refs)s, %(position)s, %(op)s, %(op)s)
+           on conflict (id) do update set
+               title = excluded.title, run_date = excluded.run_date, outcome = excluded.outcome,
+               verdict = excluded.verdict, summary = excluded.summary, method = excluded.method,
+               findings = excluded.findings, sources = excluded.sources, refs = excluded.refs,
+               position = excluded.position, updated_by = excluded.updated_by, updated_at = now()
+           returning (xmax = 0) as inserted""",
+        {
+            "id": r.id, "title": r.title, "run_date": r.run_date, "outcome": r.outcome, "verdict": r.verdict,
+            "summary": r.summary, "method": r.method, "position": r.position, "op": operator,
+            "findings": Jsonb([f.model_dump() for f in r.findings]),
+            "sources": Jsonb([s.model_dump() for s in r.sources]), "refs": Jsonb(r.refs),
+        },
+    ).fetchone()
+    asked = sorted({i.mover_id for i in r.ideas if i.mover_id})
+    known = {m["id"] for m in conn.execute("select id from movers where id = any(%s)", (asked,))} if asked else set()
+    conn.execute("delete from research_ideas where run_id = %s", (r.id,))
+    for pos, i in enumerate(r.ideas):
+        conn.execute(
+            "insert into research_ideas (run_id, position, idea, market, total, lines, note, mover_id) "
+            "values (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (r.id, pos, i.idea, i.market, i.total, Jsonb(i.lines) if i.lines is not None else None, i.note,
+             i.mover_id if i.mover_id in known else None),
+        )
+    return bool(row["inserted"]), [m for m in asked if m not in known]
+
+
+@app.post("/v1/ingest/research")
+def ingest_research(body: ResearchIn, operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """Record research runs for the founders' Research page. A run sent again
+    replaces the stored one, ideas included. An idea's mover_id that is not a
+    mover yet is reported and left unlinked."""
+    results, counts = [], {"inserted": 0, "updated": 0, "rejected": 0}
+    with pool.connection() as conn:
+        for index, raw in enumerate(body.runs):
+            try:
+                r = ResearchRunIn.model_validate(raw)
+            except Exception as exc:  # pydantic ValidationError or a URL ValueError
+                counts["rejected"] += 1
+                results.append({"index": index, "id": raw.get("id") if isinstance(raw.get("id"), str) else None,
+                                "outcome": "rejected", "reason": str(exc)[:500]})
+                continue
+            try:
+                with conn.transaction():
+                    inserted, unlinked = _upsert_research(conn, r, operator)
+            except Exception as exc:
+                counts["rejected"] += 1
+                results.append({"index": index, "id": r.id, "outcome": "rejected", "reason": f"database: {exc}"[:300]})
+                continue
+            outcome = "inserted" if inserted else "updated"
+            counts[outcome] += 1
+            results.append({"index": index, "id": r.id, "outcome": outcome, "ideas": len(r.ideas), "unlinked": unlinked})
+    return {"operator": operator, **counts, "results": results}
+
+
+@app.get("/v1/ingest/research")
+def ingest_research_list(operator: Annotated[str, Depends(require_ingest)]) -> dict:
+    """What is stored: each run's id, title, verdict, idea count and best score."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "select r.id, r.title, r.run_date, r.verdict, count(ri.id) ideas, max(ri.total) best "
+            "from research_runs r left join research_ideas ri on ri.run_id = r.id "
+            "group by r.id order by r.run_date desc, r.position, r.id"
+        ).fetchall()
+    return {"runs": [_mover_json(r) for r in rows]}
