@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MOVER_ID_RE, addDays, idFromSlug, isIsoDate, moverKind, moverPath, slugify, storyPath, todayPT } from './format.ts';
+import {
+  MOVER_ID_RE, addDays, formatMoment, idFromSlug, isIsoDate, moverKind, moverPath, shortDate, slugify, storyPath, timePT, todayPT,
+} from './format.ts';
 
 test('isIsoDate accepts real dates only', () => {
   assert.equal(isIsoDate('2026-10-22'), true);
@@ -39,4 +41,16 @@ test('mover kind filter and paths', () => {
   assert.equal(MOVER_ID_RE.test('example-robotics'), true);
   assert.equal(MOVER_ID_RE.test('../etc'), false);
   assert.equal(MOVER_ID_RE.test('x'), false);
+});
+
+test('a moment reads in the given zone, and Pacific matches the server text exactly', () => {
+  const ts = '2026-10-23T03:14:00Z';
+  assert.match(timePT(ts), /^Oct 22, 8:14\sPM PT$/u);
+  assert.equal(formatMoment(ts, 'datetime', 'America/Los_Angeles'), timePT(ts));
+  assert.match(formatMoment(ts, 'datetime', 'America/New_York'), /^Oct 22, 11:14\sPM EDT$/u);
+  assert.match(formatMoment(ts, 'datetime', 'Asia/Kolkata'), /^Oct 23, 8:44\sAM GMT\+5:30$/u);
+  assert.match(formatMoment(ts, 'time', 'America/Los_Angeles'), /^8:14\sPM PT$/u);
+  assert.equal(formatMoment(ts, 'date', 'America/New_York'), 'Oct 22, 2026');
+  assert.equal(formatMoment(ts, 'date', 'Asia/Kolkata'), 'Oct 23, 2026');
+  assert.equal(formatMoment(ts, 'date', 'America/Los_Angeles'), shortDate(todayPT(new Date(ts))));
 });

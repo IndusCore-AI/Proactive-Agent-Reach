@@ -5,13 +5,14 @@ import { notFound } from 'next/navigation';
 import { Card } from '@/components/Cards';
 import { Bar, HomeLink, JsonLd } from '@/components/Chrome';
 import { DecisionPanel, History, NextSteps, STATUS_LABEL, ScoreCard } from '@/components/Desk';
+import { LocalTime } from '@/components/LocalTime';
 import { MoverLogo } from '@/components/MoverLogo';
 import { FoundersBar, Markets, OurTake, TractionList } from '@/components/Movers';
 import { ApiError, getDeskMover, getMover } from '@/lib/api';
 import { currentFounder } from '@/lib/founders';
 import { nextSteps } from '@/lib/nextSteps';
 import {
-  CLAIM_LABEL, MOVER_ID_RE, MOVER_KIND_LABEL, SITE_NAME, abs, hostOf, moverPath, shortDate, tagLabel, todayPT,
+  CLAIM_LABEL, MOVER_ID_RE, MOVER_KIND_LABEL, SITE_NAME, abs, hostOf, moverPath, shortDate, tagLabel,
 } from '@/lib/format';
 import type { DeskDetail, MoverDetail } from '@/lib/types';
 
@@ -164,9 +165,13 @@ export default async function MoverPage({ params, searchParams }: { params: Para
             <dt>Status</dt>
             <dd>{CLAIM_EXPLAINED[m.claim_status]}</dd>
             <dt>{desk && desk.status === 'proposed' ? 'Proposed' : 'On the list since'}</dt>
-            <dd>{shortDate(todayPT(new Date(m.first_added_at)))}</dd>
+            <dd>
+              <LocalTime ts={m.first_added_at} style="date" />
+            </dd>
             <dt>Facts updated</dt>
-            <dd>{shortDate(todayPT(new Date(m.updated_at)))}</dd>
+            <dd>
+              <LocalTime ts={m.updated_at} style="date" />
+            </dd>
             {m.tags.length > 0 && (
               <>
                 <dt>Topics</dt>

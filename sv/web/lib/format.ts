@@ -69,9 +69,29 @@ export function shortDate(iso: string): string {
     .format(new Date(`${iso}T12:00:00Z`));
 }
 
+export type TimeStyle = 'datetime' | 'time' | 'date';
+
+const TIME_STYLE: Record<TimeStyle, Intl.DateTimeFormatOptions> = {
+  datetime: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
+  time: { hour: 'numeric', minute: '2-digit' },
+  date: { month: 'short', day: 'numeric', year: 'numeric' },
+};
+
+/** A moment in `timeZone`, or the runtime's own zone when left out: "Oct 21,
+ * 7:05 PM EDT", "7:05 PM EDT" or "Oct 21, 2026". Pacific reads "PT", exactly
+ * like timePT, so the server's text and a Pacific viewer's text are the same. */
+export function formatMoment(ts: string, style: TimeStyle, timeZone?: string): string {
+  const opts: Intl.DateTimeFormatOptions = { ...TIME_STYLE[style], ...(timeZone ? { timeZone } : {}) };
+  if (style === 'date') return new Intl.DateTimeFormat('en-US', opts).format(new Date(ts));
+  return new Intl.DateTimeFormat('en-US', { ...opts, timeZoneName: 'short' })
+    .formatToParts(new Date(ts))
+    .map((p) => (p.type === 'timeZoneName' && /^P[SD]T$/.test(p.value) ? 'PT' : p.value))
+    .join('');
+}
+
 /** "Oct 21, 4:05 PM PT" for a timestamp. */
 export function timePT(ts: string): string {
-  return `${new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(ts))} PT`;
+  return formatMoment(ts, 'datetime', TZ);
 }
 
 export function addDays(iso: string, n: number): string {
