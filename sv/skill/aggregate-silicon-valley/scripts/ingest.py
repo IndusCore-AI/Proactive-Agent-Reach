@@ -10,6 +10,8 @@
   python3 ingest.py archive MOVER_ID            # stop watching a mover (hides it from the site)
   python3 ingest.py notes MOVER_ID notes.json   # update only the take or the office-hours score
   python3 ingest.py feedback                    # the founders' votes, reasons and stages
+  python3 ingest.py research research.json      # record research runs on the founders' Research page (private)
+  python3 ingest.py research --list             # the research runs stored: id, verdict, ideas, best score
 
 Talks only to the public site's ingest endpoint (default
 https://induscore.site/sv/api/ingest), which forwards to the VM API with your
@@ -110,7 +112,7 @@ def load_curated(path: Path) -> list[dict]:
 # ---------------------------------------------------------------- movers
 
 MOVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,59}$")
-RESERVED_MOVER_IDS = {"unlock", "lock", "updates"}
+RESERVED_MOVER_IDS = {"unlock", "lock", "updates", "research"}
 MOVER_KINDS = {"company", "app", "skill"}
 MOVER_FIELDS = {"id", "name", "kind", "url", "one_liner", "summary", "traction", "markets_live", "claim_status",
                 "tags", "image_url", "image_kind", "status", "notes", "item_urls"}
@@ -174,7 +176,7 @@ def mover_problems(m: object) -> list[str]:
             out.append(f"missing {k}")
     mid = m.get("id")
     if isinstance(mid, str) and (not MOVER_ID.match(mid) or mid in RESERVED_MOVER_IDS):
-        out.append(f"id {mid!r} must be a lowercase slug (a-z, 0-9, -), 2-60 characters, not unlock/lock/updates")
+        out.append(f"id {mid!r} must be a lowercase slug (a-z, 0-9, -), 2-60 characters, not unlock/lock/updates/research")
     if m.get("kind") is not None and m.get("kind") not in MOVER_KINDS:
         out.append(f"kind must be one of {sorted(MOVER_KINDS)}")
     if isinstance(m.get("one_liner"), str) and len(m["one_liner"]) > 200:
@@ -270,6 +272,121 @@ def proposal_problems(movers: list[dict], existing: list[dict]) -> list[str]:
             out.append(f"{mid}: needs notes.take, the private take")
         if not isinstance(notes.get("score"), dict):
             out.append(f"{mid}: needs notes.score, the office-hours rubric for one named market")
+    return out
+
+
+# ---------------------------------------------------------------- research
+
+RESEARCH_CUTOFF = 40
+RESEARCH_OUTCOMES = ("makes_list", "below_cutoff", "no", "replaced", "input")
+RESEARCH_FIELDS = {"id", "title", "run_date", "outcome", "verdict", "summary", "method", "findings", "sources", "refs",
+                   "position", "ideas"}
+IDEA_FIELDS = {"idea", "market", "total", "lines", "note", "mover_id"}
+
+
+def _text_problem(where: str, v: object, cap: int, required: bool = False) -> list[str]:
+    if v is None and not required:
+        return []
+    if not isinstance(v, str) or (required and not v.strip()):
+        return [f"{where} must be text{' (required)' if required else ''}"]
+    if len(v) > cap:
+        return [f"{where} is over {cap} characters"]
+    if "<" in v and ">" in v:
+        return [f"{where} has markup; plain text only"]
+    return []
+
+
+def idea_problems(i: object, where: str) -> list[str]:
+    if not isinstance(i, dict):
+        return [f"{where} is not an object"]
+    out = [f"{where} has unknown fields {sorted(set(i) - IDEA_FIELDS)}"] if set(i) - IDEA_FIELDS else []
+    out += _text_problem(f"{where}.idea", i.get("idea"), 200, True) + _text_problem(f"{where}.market", i.get("market"), 120, True)
+    out += _text_problem(f"{where}.note", i.get("note"), 300)
+    total = i.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or not 0 <= total <= 100:
+        out.append(f"{where}.total must be a whole number from 0 to 100")
+    lines = i.get("lines")
+    if lines is not None:
+        if not isinstance(lines, dict) or set(lines) != set(RUBRIC):
+            out.append(f"{where}.lines must be exactly {', '.join(RUBRIC)} (or left out)")
+        elif any(not isinstance(lines[k], int) or not 0 <= lines[k] <= cap for k, cap in RUBRIC.items()):
+            out.append(f"{where}.lines must be whole numbers within each line's maximum")
+        elif isinstance(total, int) and sum(lines.values()) != total:
+            out.append(f"{where}.total {total} is not the sum of the lines ({sum(lines.values())})")
+    if i.get("mover_id") is not None and not (isinstance(i["mover_id"], str) and MOVER_ID.match(i["mover_id"])):
+        out.append(f"{where}.mover_id must be a mover's id")
+    return out
+
+
+def research_problems(r: object) -> list[str]:
+    """What the server would refuse in one research run, caught before sending."""
+    if not isinstance(r, dict):
+        return ["not an object"]
+    out = [f"unknown fields {sorted(set(r) - RESEARCH_FIELDS)}"] if set(r) - RESEARCH_FIELDS else []
+    if not (isinstance(r.get("id"), str) and MOVER_ID.match(r["id"])):
+        out.append("id must be a lowercase slug (a-z, 0-9, -), 2-60 characters, e.g. 2026-10-22-example-lead")
+    out += _text_problem("title", r.get("title"), 160, True) + _text_problem("verdict", r.get("verdict"), 120, True)
+    out += _text_problem("summary", r.get("summary"), 1500) + _text_problem("method", r.get("method"), 1500)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(r.get("run_date") or "")):
+        out.append("run_date must be YYYY-MM-DD")
+    if r.get("outcome") not in RESEARCH_OUTCOMES:
+        out.append(f"outcome must be one of {', '.join(RESEARCH_OUTCOMES)}")
+    findings = r.get("findings") or []
+    if not isinstance(findings, list) or len(findings) > 20:
+        out.append("findings must be a list of at most 20")
+        findings = []
+    for n, f in enumerate(findings):
+        if not isinstance(f, dict) or set(f) - {"group", "title", "text"}:
+            out.append(f"findings[{n}] must be an object with text (and optional group, title)")
+            continue
+        out += (_text_problem(f"findings[{n}].text", f.get("text"), 900, True)
+                + _text_problem(f"findings[{n}].title", f.get("title"), 160)
+                + _text_problem(f"findings[{n}].group", f.get("group"), 60))
+    sources = r.get("sources") or []
+    if not isinstance(sources, list) or len(sources) > 15:
+        out.append("sources must be a list of at most 15")
+        sources = []
+    for n, src in enumerate(sources):
+        if not isinstance(src, dict) or set(src) != {"label", "url"} or not str(src.get("url") or "").startswith("https://"):
+            out.append(f"sources[{n}] must be {{label, url}} with an https url")
+    refs = r.get("refs") or []
+    if not isinstance(refs, list) or len(refs) > 12 or any(not isinstance(x, str) or not x.strip() or len(x) > 120 for x in refs):
+        out.append("refs must be a list of at most 12 short strings (file names, teamctx ids)")
+    ideas = r.get("ideas") or []
+    if not isinstance(ideas, list) or len(ideas) > 60:
+        out.append("ideas must be a list of at most 60")
+        ideas = []
+    for n, i in enumerate(ideas):
+        out += idea_problems(i, f"ideas[{n}]")
+    totals = [i["total"] for i in ideas if isinstance(i, dict) and isinstance(i.get("total"), int)]
+    if r.get("outcome") == "makes_list" and not any(t >= RESEARCH_CUTOFF for t in totals):
+        out.append(f"outcome makes_list needs an idea at {RESEARCH_CUTOFF} or more")
+    if r.get("outcome") == "below_cutoff" and (not totals or max(totals) >= RESEARCH_CUTOFF):
+        out.append(f"outcome below_cutoff needs scored ideas, all under {RESEARCH_CUTOFF}")
+    return out
+
+
+def load_research(path: Path) -> list[dict]:
+    doc = json.loads(path.read_text())
+    runs = doc.get("runs") if isinstance(doc, dict) else doc
+    if not isinstance(runs, list) or not runs or len(runs) > 20:
+        sys.exit('research file must be {"runs": [...]} with 1 to 20 runs')
+    problems = [f"run {n} ({r.get('id') if isinstance(r, dict) else '?'}): {p}"
+                for n, r in enumerate(runs) for p in research_problems(r)]
+    ids = [r.get("id") for r in runs if isinstance(r, dict)]
+    problems += [f"id {i!r} appears more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
+    if problems:
+        sys.exit("research file has problems:\n  " + "\n  ".join(problems[:30]))
+    return runs
+
+
+def research_texts(runs: list[dict]) -> list[str]:
+    """The private strings in a research file (findings, summaries, ideas), for the leak check."""
+    out = []
+    for r in runs:
+        out += [v for v in (r.get("summary"), r.get("method")) if isinstance(v, str) and v.strip()]
+        out += [f["text"] for f in r.get("findings") or [] if isinstance(f, dict) and isinstance(f.get("text"), str)]
+        out += [i["idea"] for i in r.get("ideas") or [] if isinstance(i, dict) and isinstance(i.get("idea"), str)]
     return out
 
 
@@ -448,7 +565,49 @@ def cmd_feedback(argv: list[str]) -> None:
     print(json.dumps(res, indent=1, ensure_ascii=False))
 
 
-SUBCOMMANDS = {"movers": cmd_movers, "link": cmd_link, "archive": cmd_archive, "notes": cmd_notes, "feedback": cmd_feedback}
+def cmd_research(argv: list[str]) -> None:
+    ap = argparse.ArgumentParser(prog="ingest.py research",
+                                 description="Record research runs (verdict, method, findings, sources, scored ideas) on the "
+                                             "founders' private Research page. A run sent again replaces the stored one.")
+    ap.add_argument("file", nargs="?", type=Path)
+    ap.add_argument("--list", action="store_true", help="print the stored runs and exit")
+    args = ap.parse_args(argv)
+    base, token = connection()
+    if args.list:
+        status, res = call("GET", f"{base}/api/ingest/research", token)
+        if status != 200:
+            sys.exit(f"could not list research: HTTP {status} {res}")
+        for r in res["runs"]:
+            print(f"{r['id']}\t{r['run_date']}\t{r['verdict']}\t{r['ideas']} ideas\tbest {r['best']}")
+        print(f"{len(res['runs'])} runs")
+        return
+    if not args.file:
+        ap.error("give a research JSON file, or --list")
+    runs = load_research(args.file)
+    status, res = call("POST", f"{base}/api/ingest/research", token, {"runs": runs})
+    if status != 200:
+        sys.exit(f"could not record research: HTTP {status} {str(res)[:300]}")
+    rejected = [r for r in res["results"] if r["outcome"] == "rejected"]
+    unlinked = {r["id"]: r["unlinked"] for r in res["results"] if r.get("unlinked")}
+
+    # verify 1: the database lists every run with the number of ideas sent
+    list_status, listing = call("GET", f"{base}/api/ingest/research", token)
+    stored = {r["id"]: r for r in listing.get("runs", [])} if list_status == 200 else {}
+    wrong = [r["id"] for r in runs if stored.get(r["id"], {}).get("ideas") != len(r.get("ideas") or [])]
+    # verify 2: the Research page shows nothing to a browser that is not unlocked
+    _, page = call("GET", f"{base}/movers/research?v={int(time.time())}")
+    hits = leaked(page, research_texts(runs)) if isinstance(page, str) else []
+    report = {
+        "sent": len(runs), "inserted": res["inserted"], "updated": res["updated"], "rejected": rejected,
+        "unlinked_movers": unlinked, "db_verified": list_status == 200 and not wrong, "missing_or_wrong_in_db": wrong,
+        "locked_page_clean": not hits, "locked_page_problems": hits,
+    }
+    print(json.dumps(report, indent=1, ensure_ascii=False))
+    sys.exit(0 if not rejected and list_status == 200 and not wrong and not hits else 2)
+
+
+SUBCOMMANDS = {"movers": cmd_movers, "link": cmd_link, "archive": cmd_archive, "notes": cmd_notes, "feedback": cmd_feedback,
+               "research": cmd_research}
 
 
 def main() -> None:
