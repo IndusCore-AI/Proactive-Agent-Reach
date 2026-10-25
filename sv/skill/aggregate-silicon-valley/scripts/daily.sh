@@ -67,10 +67,19 @@ PROMPT="/aggregate-silicon-valley $EDITION
 This is the unattended daily run (07:00 India time). Nobody is watching: never ask a question, make each call \
 yourself and finish the whole run, including step 5 (propose movers with --publish-min 45). End with the step 6 report."
 cd "$SKILL" || exit 1
-# a hung run must not hold the day: 90 minutes at most
-perl -e 'alarm shift; exec @ARGV or die "exec: $!"' 5400 \
-  "$CLAUDE" -p "$PROMPT" --dangerously-skip-permissions >> "$LOG" 2>&1
-code=$?
+# A hung run must not hold the day: after SV_DAILY_TIMEOUT seconds (90 minutes) the
+# whole process group goes, claude and any fetch it started. (An alarm signal is
+# not enough: claude outlived one for 8 hours on 2026-10-24.)
+set -m
+"$CLAUDE" -p "$PROMPT" --dangerously-skip-permissions >> "$LOG" 2>&1 &
+pid=$!
+( sleep "${SV_DAILY_TIMEOUT:-5400}"
+  echo "$(date -u +%FT%TZ) timed out after ${SV_DAILY_TIMEOUT:-5400}s; stopping the run" >> "$LOG"
+  kill -TERM -- "-$pid" 2>/dev/null; sleep 30; kill -KILL -- "-$pid" 2>/dev/null ) &
+watchdog=$!
+set +m
+wait "$pid" 2>/dev/null; code=$?
+kill -- "-$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
 log "claude exited $code"
 
 if edition_done; then
